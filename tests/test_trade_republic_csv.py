@@ -21,7 +21,6 @@ def test_parse_trade_republic_csv_maps_cash_inbound_to_external_transfer():
     assert mapped[0]["amount"] == 3000
     assert mapped[0]["source_id"] == "cdc3f72a-3a90-4ec9-9327-1d5b0bb3995d"
     assert mapped[0]["transfer_kind"] == "external"
-    assert "counterparty_iban" in mapped[0]["memo"]
 
 
 def test_parse_trade_republic_csv_maps_buy_to_cash_depot_transfer():

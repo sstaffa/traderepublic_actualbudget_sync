@@ -127,5 +127,14 @@ def test_map_real_tr_format_memo():
     mapped = map_pytr_to_actual(SAMPLE_TR_REAL)
     assert "Sparplan ausgeführt" in mapped[0]["memo"]
     assert "eventType: TRADING_SAVINGSPLAN_EXECUTED" in mapped[0]["memo"]
-    assert "Trade Republic raw:" in mapped[0]["memo"]
     assert "eventType: CARD_TRANSACTION" in mapped[1]["memo"]
+
+def test_map_real_tr_format_memo_with_raw_enabled(monkeypatch):
+    """Bei aktiviertem include_raw_in_notes landet das Raw-JSON im Memo."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "include_raw_in_notes", True)
+    monkeypatch.setattr(settings, "include_status_in_notes", True)
+
+    mapped = map_pytr_to_actual(SAMPLE_TR_REAL)
+    assert "TR status:" in mapped[0]["memo"]
+    assert "Trade Republic raw:" in mapped[0]["memo"]
