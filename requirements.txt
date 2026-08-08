@@ -1,9 +1,9 @@
-fastapi>=0.137.2
-uvicorn>=0.49.0
+fastapi>=0.141.1
+uvicorn>=0.52.1
 # pydantic v2 required by recent actualpy
 pydantic==2.13.4
 httpx==0.28.1
 # Use recent pytr and actualpy versions
-pytr==0.4.9
-actualpy==0.22.2
+pytr==0.4.10
+actualpy==0.22.3
 aiofiles==25.1.0
