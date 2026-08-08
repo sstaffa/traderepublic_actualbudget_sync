@@ -988,7 +988,7 @@ def push_transactions(transactions: List[Dict]) -> Dict:
 
     try:
         from actual import Actual
-        from actual.queries import get_or_create_account, reconcile_transaction
+        from actual.queries import get_or_create_account, reconcile_transaction, get_ruleset
     except ImportError as e:
         raise NotImplementedError(tr("actual.package_required", error=e))
 
@@ -1033,6 +1033,7 @@ def push_transactions(transactions: List[Dict]) -> Dict:
                 else None
             )
             already_matched = []
+            newly_created_transactions = []
 
             for tx in transactions:
                 date_str = tx.get("date") or ""
@@ -1119,6 +1120,9 @@ def push_transactions(transactions: List[Dict]) -> Dict:
                             allow_create_pair=settings.autocreate_transfer,
                         )
                         inserted += 1
+                        newly_created_transactions.append(result_tx)
+                        if counterpart_tx is not None:
+                            newly_created_transactions.append(counterpart_tx)
                         action = "linked_transfer" if linked_existing else (
                             "created_transfer" if counterpart_tx is not None else "imported_without_counterpart"
                         )
@@ -1186,6 +1190,9 @@ def push_transactions(transactions: List[Dict]) -> Dict:
                             allow_create_pair=True,
                         )
                         inserted += 1
+                        newly_created_transactions.append(result_tx)
+                        if counterpart_tx is not None:
+                            newly_created_transactions.append(counterpart_tx)
                         report.append({
                             "source_id": imported_id,
                             "date": date_str,
@@ -1244,6 +1251,7 @@ def push_transactions(transactions: List[Dict]) -> Dict:
                     # existing transaction was reconciled as a duplicate.
                     if result_tx in session.new:
                         inserted += 1
+                        newly_created_transactions.append(result_tx)
                         report.append({
                             "source_id": imported_id,
                             "date": date_str,
@@ -1278,6 +1286,10 @@ def push_transactions(transactions: List[Dict]) -> Dict:
                         "error": str(e),
                     })
                     skipped += 1
+
+            if newly_created_transactions and settings.run_rules_after_sync:
+                ruleset = get_ruleset(session)
+                ruleset.run(newly_created_transactions)
 
             actual.commit()
 
