@@ -116,7 +116,7 @@ def _build_memo(tx: Dict[str, Any], event_type: str, status: str, raw: Dict[str,
         parts.append(f"eventType: {event_type}")
 
     if settings.include_status_in_notes and status:
-        parts.append(f"TR status: {status}")
+        parts.append(f"status: {status}")
 
     if settings.include_raw_in_notes:
         payload = raw if raw is not None else tx

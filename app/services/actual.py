@@ -9,7 +9,7 @@ from app.core.i18n import tr
 
 log = logging.getLogger(__name__)
 
-DEPOT_VALUATION_PAYEE = "TR Depotwert-Anpassung seit letzter Bewertung"
+DEPOT_VALUATION_PAYEE = "Depotwert-Anpassung seit letzter Bewertung"
 DEPOT_VALUATION_IMPORT_PREFIX = "tr-depot-valuation-adjustment:"
 TR_TIMESTAMP_PATTERN = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})"
@@ -102,7 +102,7 @@ def _find_cross_source_import_duplicate(
         if (
             event_type in DATE_AMOUNT_EVENT_DUPLICATES
             and candidate.date == date_to_int(date)
-            and f"TR eventType: {event_type}" in (candidate.notes or "")
+            and f"eventType: {event_type}" in (candidate.notes or "")
         ):
             return candidate
         if (
@@ -196,7 +196,7 @@ def _find_trade_import_duplicate(
     for candidate in candidates:
         candidate_notes = candidate.notes or ""
         if (
-            "TR eventType: TRADING_TRADE_EXECUTED" in candidate_notes
+            "eventType: TRADING_TRADE_EXECUTED" in candidate_notes
             and incoming_isins.intersection(TR_ISIN_PATTERN.findall(candidate_notes))
         ):
             matching_candidates.append(candidate)
@@ -836,7 +836,7 @@ def _find_last_depot_valuation(session, depot_account):
         .where(
             (Transactions.financial_id.startswith(DEPOT_VALUATION_IMPORT_PREFIX))
             | (Payees.name == DEPOT_VALUATION_PAYEE)
-            | (Payees.name == "TR Market valuation adjustment")
+            | (Payees.name == "Market valuation adjustment")
         )
         .order_by(Transactions.date.desc(), Transactions.sort_order.desc())
     ).first()

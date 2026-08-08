@@ -126,6 +126,6 @@ def test_map_real_tr_format_memo():
     """Le memo (subtitle) est correctement extrait."""
     mapped = map_pytr_to_actual(SAMPLE_TR_REAL)
     assert "Sparplan ausgeführt" in mapped[0]["memo"]
-    assert "TR eventType: TRADING_SAVINGSPLAN_EXECUTED" in mapped[0]["memo"]
+    assert "eventType: TRADING_SAVINGSPLAN_EXECUTED" in mapped[0]["memo"]
     assert "Trade Republic raw:" in mapped[0]["memo"]
-    assert "TR eventType: CARD_TRANSACTION" in mapped[1]["memo"]
+    assert "eventType: CARD_TRANSACTION" in mapped[1]["memo"]

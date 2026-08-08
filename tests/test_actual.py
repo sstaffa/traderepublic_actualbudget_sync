@@ -24,7 +24,7 @@ def test_depot_adjustment_dry_run_does_not_insert():
     assert result["dry_run"] is True
     assert result["would_insert"] is True
     assert result["delta"] == 3000.0
-    assert result["payee"] == "TR Depotwert-Anpassung seit letzter Bewertung"
+    assert result["payee"] == "Depotwert-Anpassung seit letzter Bewertung"
     assert result["inserted"] is False
 
 
@@ -152,7 +152,7 @@ def test_interest_payment_duplicate_is_detected_across_csv_and_api_ids():
             amount=1286,
             financial_id="019e8188-7c0b-790d-b5cb-2052e0cc344e",
             notes=(
-                "TR eventType: INTEREST_PAYOUT\n"
+                "eventType: INTEREST_PAYOUT\n"
                 'Trade Republic raw: {"timestamp": "2026-06-01T04:54:26.059306Z"}'
             ),
             tombstone=0,
@@ -188,7 +188,7 @@ def test_trade_duplicate_uses_date_and_isin_when_timeline_amount_differs():
             financial_id="d1cde3a9-0a9c-4c60-bb22-b666802ed3da",
             notes=(
                 "Buy trade IE00B57X3V84\n"
-                "TR eventType: TRADING_TRADE_EXECUTED\n"
+                "eventType: TRADING_TRADE_EXECUTED\n"
                 'Trade Republic raw: {"csv": {"fee": "-1.00"}}'
             ),
             tombstone=0,
@@ -202,7 +202,7 @@ def test_trade_duplicate_uses_date_and_isin_when_timeline_amount_differs():
             financial_id="aed6b632-826e-4fb9-ad48-eac09c1040c2",
             notes=(
                 "Buy trade IE00B57X3V84\n"
-                "TR eventType: TRADING_TRADE_EXECUTED"
+                "eventType: TRADING_TRADE_EXECUTED"
             ),
             tombstone=0,
             is_parent=0,
@@ -237,7 +237,7 @@ def test_corporate_action_matches_legacy_dividend_trade_by_isin():
             financial_id="019cbd9e-7aba-7d45-bc7d-3a1e33be1d5f",
             notes=(
                 "Cash Dividend for ISIN IE00B9MRHC27\n"
-                "TR eventType: TRADING_TRADE_EXECUTED"
+                "eventType: TRADING_TRADE_EXECUTED"
             ),
             tombstone=0,
             is_parent=0,
