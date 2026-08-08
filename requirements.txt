@@ -4,6 +4,6 @@ uvicorn>=0.52.1
 pydantic==2.13.4
 httpx==0.28.1
 # Use recent pytr and actualpy versions
-pytr==0.4.10
+pytr[playwright]==0.4.10
 actualpy==0.22.3
 aiofiles==25.1.0
