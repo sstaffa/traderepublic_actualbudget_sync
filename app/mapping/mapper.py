@@ -1,5 +1,6 @@
 from typing import List, Dict, Any
 from datetime import datetime
+from app.core.config import settings
 import json
 
 
@@ -106,21 +107,24 @@ def _classify_event(event_type: str) -> tuple[str, str | None]:
     return "cash", None
 
 
-def _build_memo(tx: Dict[str, Any], event_type: str, status: str) -> str:
+def _build_memo(tx: Dict[str, Any], event_type: str, status: str, raw: Dict[str, Any] | None = None) -> str:
     parts = []
     subtitle = tx.get("subtitle")
     if subtitle:
         parts.append(str(subtitle))
     if event_type:
-        parts.append(f"TR eventType: {event_type}")
-    if status:
+        parts.append(f"eventType: {event_type}")
+
+    if settings.include_status_in_notes and status:
         parts.append(f"TR status: {status}")
 
-    try:
-        details = json.dumps(tx, ensure_ascii=False, sort_keys=True, default=str)
-    except Exception:
-        details = str(tx)
-    parts.append("Trade Republic raw: " + details)
+    if settings.include_raw_in_notes:
+        payload = raw if raw is not None else tx
+        try:
+            details = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            details = str(payload)
+        parts.append("Trade Republic raw: " + details)
     return "\n".join(parts)
 
 
@@ -147,7 +151,7 @@ def map_pytr_to_actual(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any
             "payee": payee,
             "amount": amount,
             "currency": currency,
-            "memo": _build_memo(tx, event_type, status),
+            "memo": _build_memo(tx, event_type, status, raw=tx.get("raw")),
             "source_id": source_id,
             "event_type": event_type,
             "cleared": cleared,

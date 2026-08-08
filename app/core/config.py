@@ -42,6 +42,8 @@ class Settings:
     autocreate_transfer: bool = _env_bool("TR_AUTOCREATE_TRANSFER", False)
     transfer_match_days: int = int(os.getenv("TR_TRANSFER_MATCH_DAYS", "3"))
     transfer_match_tolerance_cents: int = int(os.getenv("TR_TRANSFER_MATCH_TOLERANCE_CENTS", "0"))
+    include_status_in_notes: bool = _env_bool("INCLUDE_STATUS_IN_NOTES", False)
+    include_raw_in_notes: bool = _env_bool("INCLUDE_RAW_IN_NOTES", False)
 
 
 settings = Settings()
