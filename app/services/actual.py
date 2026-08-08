@@ -1287,9 +1287,27 @@ def push_transactions(transactions: List[Dict]) -> Dict:
                     })
                     skipped += 1
 
-            if newly_created_transactions and settings.run_rules_after_sync:
+            if settings.run_rules_after_sync:
                 ruleset = get_ruleset(session)
-                ruleset.run(newly_created_transactions)
+                if settings.run_rules_on_all_transactions:
+                    # Apply rules to every active, previously imported transaction as well,
+                    # not just the ones inserted in this run. This ensures rule changes
+                    # (e.g. a new delete-transaction rule) also retroactively affect
+                    # transactions that were already synced before the rule existed.
+                    from actual.database import Transactions
+                    from sqlmodel import select
+
+                    rule_targets = session.exec(
+                        select(Transactions)
+                        .where(Transactions.financial_id.is_not(None))
+                        .where(Transactions.tombstone == 0)
+                        .where(Transactions.is_parent == 0)
+                    ).all()
+                else:
+                    rule_targets = newly_created_transactions
+
+                if rule_targets:
+                    ruleset.run(rule_targets)
 
             actual.commit()
 

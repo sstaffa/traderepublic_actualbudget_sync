@@ -44,6 +44,7 @@ class Settings:
     transfer_match_tolerance_cents: int = int(os.getenv("TR_TRANSFER_MATCH_TOLERANCE_CENTS", "0"))
     
     run_rules_after_sync: bool = _env_bool("RUN_RULES_AFTER_SYNC", True)
+    run_rules_on_all_transactions: bool = _env_bool("RUN_RULES_ON_ALL_TRANSACTIONS", True)
     include_status_in_notes: bool = _env_bool("INCLUDE_STATUS_IN_NOTES", False)
     include_raw_in_notes: bool = _env_bool("INCLUDE_RAW_IN_NOTES", False)
 
