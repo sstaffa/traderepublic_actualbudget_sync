@@ -1,22 +1,38 @@
 services:
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: tr-actual-sync:latest
-    # Load defaults from .env.example then override with .env (if present)
+  tr-sync:
+    container_name: tr-sync
+    # Replace <github-user> and <repo-name> with your GitHub details (must be all lowercase)
+    image: ghcr.io/sstaffa/traderepublic_actualbudget_sync:latest
     env_file:
       - .env.example
       - .env
     ports:
-      - "127.0.0.1:8000:8000"
+      - 8033:8000
     restart: unless-stopped
     volumes:
-      # mount workspace for easier development (read-write) so pytr can persist cookies
-      - ./:/app:rw
+      # Mount only the data directory for persistent files (e.g., pytr cookies or databases)
+      # Do NOT mount the local source code here to avoid overriding the container's built image
+      - ./data:/data
     environment:
-      # Use the value from .env (APP_MODE). If not set, default to 'production'
       APP_MODE: ${APP_MODE:-production}
+    networks:
+      - backend
 
+  watchtower:
+    image: nickfedor/watchtower:latest
+    container_name: watchtower_tr
+    restart: unless-stopped
+    volumes:
+      # Grant Watchtower access to the Docker socket to inspect and restart containers
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_POLL_INTERVAL=300 # Check for updated images every 5 minutes (300 seconds)
+      - WATCHTOWER_CLEANUP=true      # Automatically remove old, unused images after updating
+    # Restrict Watchtower to only monitor the 'tr-sync' container
+    command: tr-sync
+    networks:
+      - backend
 
-
+networks:
+  backend:
+    external: true

@@ -1,0 +1,27 @@
+services:
+  tr-sync:
+    container_name: tr-sync
+    build:
+      context: ./traderepublic_actualbudget_sync
+      dockerfile: Dockerfile
+    image: tr-sync-custom:latest
+    # Load defaults from .env.example then override with .env (if present)
+    env_file:
+      - .env.example
+      - .env
+    ports:
+      - 8033:8000
+    restart: unless-stopped
+    volumes:
+      # mount workspace for easier development (read-write) so pytr can persist cookies
+      - ./traderepublic_actualbudget_sync:/app:rw
+      - ./data:/data
+    environment:
+      # Use the value from .env (APP_MODE). If not set, default to 'production'
+      APP_MODE: ${APP_MODE:-production}
+    networks:
+      - backend
+
+networks:
+  backend:
+    external: true
