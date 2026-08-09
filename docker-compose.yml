@@ -14,7 +14,8 @@ services:
       # Do NOT mount the local source code here to avoid overriding the container's built image
       - ./data:/data
     environment:
-      APP_MODE: ${APP_MODE:-production}
+      - TZ=Europe/Berlin
+      - APP_MODE: ${APP_MODE:-production}
     networks:
       - backend
 
