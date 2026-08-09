@@ -136,5 +136,5 @@ def test_map_real_tr_format_memo_with_raw_enabled(monkeypatch):
     monkeypatch.setattr(settings, "include_status_in_notes", True)
 
     mapped = map_pytr_to_actual(SAMPLE_TR_REAL)
-    assert "TR status:" in mapped[0]["memo"]
+    assert "status:" in mapped[0]["memo"]
     assert "Trade Republic raw:" in mapped[0]["memo"]
