@@ -32,6 +32,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 1. Build local image for running tests
+      - name: Build image for testing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: test-app:latest
+          cache-from: type=gha
+
+      # 2. Run Pytest inside container (failures will not stop the workflow)
+      - name: Run Tests (Optional)
+        continue-on-error: true
+        run: |
+          docker run --rm test-app:latest pytest
+
+      # 3. Push image to GHCR
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
