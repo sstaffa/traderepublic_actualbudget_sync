@@ -183,7 +183,7 @@ def _mark_session_expired(session_id: str | None, message: str = "websession exp
     _save_sessions()
 
 
-def _mark_session_connected(session_id: str | None, message: str = "websession valid") -> None:
+def _mark_session_connected(session_id: str | None, message: str = "websession valid", api=None) -> None:
     if not session_id:
         return
     with SESSIONS_LOCK:
@@ -191,6 +191,15 @@ def _mark_session_connected(session_id: str | None, message: str = "websession v
         if session:
             session.update({"status": "connected", "message": message})
     _save_sessions()
+    if api is not None:
+        try:
+            api.save_websession()
+        except Exception as exc:
+            log.warning(
+                "save_websession failed while persisting rotated cookies for session %s: %s",
+                session_id,
+                exc,
+            )
 
 
 class TRRateLimitError(Exception):
@@ -668,7 +677,7 @@ def fetch_depot_value(session_id: str | None = None) -> Dict:
     if not api.resume_websession():
         _mark_session_expired(resolved_sid)
         raise NotImplementedError(tr("tr.session_expired"))
-    _mark_session_connected(resolved_sid)
+    _mark_session_connected(resolved_sid, api=api)
 
     try:
         _reset_api_async_state(api)
@@ -709,7 +718,7 @@ def fetch_transactions(session_id: str | None = None) -> List[Dict]:
     if not api.resume_websession():
         _mark_session_expired(resolved_sid)
         raise NotImplementedError(tr("tr.session_expired"))
-    _mark_session_connected(resolved_sid)
+    _mark_session_connected(resolved_sid, api=api)
 
     # Reset state before each run_blocking/asyncio.run call because locks are loop-bound.
     _reset_api_async_state(api)
@@ -960,7 +969,7 @@ def fetch_all_transactions(
     if not api.resume_websession():
         _mark_session_expired(resolved_sid)
         raise NotImplementedError(tr("tr.session_expired"))
-    _mark_session_connected(resolved_sid)
+    _mark_session_connected(resolved_sid, api=api)
 
     try:
         _reset_api_async_state(api)
@@ -1135,7 +1144,7 @@ def get_login_status() -> Dict:
                     _store_api_client(sid, api)
                 if api.resume_websession():
                     validity = "valid"
-                    _mark_session_connected(sid)
+                    _mark_session_connected(sid, api=api)
                 else:
                     validity = "expired"
                     _mark_session_expired(sid)
