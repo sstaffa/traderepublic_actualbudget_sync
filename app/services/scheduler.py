@@ -6,12 +6,25 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.mapping.mapper import map_pytr_to_actual
-from app.services.actual import push_transactions
-from app.services.state import load_state, mark_sync_failure, mark_sync_success
-from app.services.trade_republic import fetch_all_transactions, fetch_transactions, get_last_history_meta
+from app.services.actual import adjust_depot_balance, adjust_sub_depot_balances, push_transactions
+from app.services.state import (
+    load_state,
+    mark_depot_sync_failure,
+    mark_depot_sync_success,
+    mark_sync_failure,
+    mark_sync_success,
+)
+from app.services.trade_republic import (
+    fetch_all_transactions,
+    fetch_depot_value,
+    fetch_transactions,
+    get_last_history_meta,
+)
 
 log = logging.getLogger(__name__)
 
+# Shared across the transaction sync and the depot sync: both write to the
+# same Actual budget file, so only one should run at a time.
 _sync_lock = asyncio.Lock()
 
 
@@ -83,7 +96,7 @@ def _parse_cron_field(value: str, minimum: int, maximum: int, *, allow_7_as_0: b
 def parse_cron(expr: str) -> CronSchedule:
     fields = expr.split()
     if len(fields) != 5:
-        raise ValueError("SYNC_CRON must have 5 fields: minute hour day month weekday")
+        raise ValueError("Cron expression must have 5 fields: minute hour day month weekday")
 
     return CronSchedule(
         minutes=_parse_cron_field(fields[0], 0, 59),
@@ -93,6 +106,8 @@ def parse_cron(expr: str) -> CronSchedule:
         weekdays=_parse_cron_field(fields[4], 0, 7, allow_7_as_0=True),
     )
 
+
+# --- Transaction (cash) sync -------------------------------------------------
 
 async def run_scheduled_sync() -> dict:
     state = load_state()
@@ -165,16 +180,118 @@ async def scheduler_loop(cron_expr: str | None = None) -> None:
             log.exception("Scheduled sync failed")
 
 
-def start_scheduler() -> asyncio.Task | None:
-    if not (settings.sync_cron or "").strip():
-        log.info("Scheduled sync disabled because SYNC_CRON is empty")
-        return None
-    return asyncio.create_task(scheduler_loop())
+# --- Depot valuation sync -----------------------------------------------------
+# Adjusts the main depot account + every account configured via
+# ACTUAL_SUB_DEPOTS to its current Trade Republic market value. Deliberately
+# does NOT touch cash accounts - those are covered by the transaction sync
+# above. Runs on its own DEPOT_SYNC_CRON schedule (checked daily by default),
+# but only actually executes once DEPOT_SYNC_INTERVAL_DAYS have passed since
+# the last successful depot sync, so "every 30 days" works without relying on
+# non-standard cron syntax. The elapsed-time check is state-file based, so it
+# survives container restarts/rebuilds.
+
+def _depot_sync_due(interval_days: int) -> bool:
+    state = load_state()
+    last = state.get("last_depot_sync_at")
+    if not last:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(last)
+    except ValueError:
+        return True
+    if last_dt.tzinfo is not None:
+        last_dt = last_dt.astimezone().replace(tzinfo=None)
+    return (datetime.now() - last_dt) >= timedelta(days=interval_days)
 
 
-async def stop_scheduler(task: asyncio.Task | None) -> None:
-    if task is None:
+async def run_scheduled_depot_sync(*, force: bool = False) -> dict:
+    """Adjust the main depot account and all ACTUAL_SUB_DEPOTS accounts.
+
+    force=True skips the DEPOT_SYNC_INTERVAL_DAYS gate (used for manual
+    triggers/tests); the scheduler loop itself always respects the interval.
+    """
+    if not force and not _depot_sync_due(settings.depot_sync_interval_days):
+        log.info(
+            "Depot sync skipped: interval of %s day(s) not yet reached",
+            settings.depot_sync_interval_days,
+        )
+        return {"status": "skipped", "reason": "interval not reached"}
+
+    if _sync_lock.locked():
+        log.warning("Depot sync skipped because another sync is still running")
+        return {"status": "skipped", "reason": "sync already running"}
+
+    async with _sync_lock:
+        try:
+            depot_summary = await asyncio.to_thread(fetch_depot_value)
+            main_result = await asyncio.to_thread(
+                adjust_depot_balance, depot_summary.get("depot_value", 0)
+            )
+            sub_results = await asyncio.to_thread(
+                adjust_sub_depot_balances, depot_summary.get("sub_depot_values", {})
+            )
+            result = {"main": main_result, "sub_accounts": sub_results}
+            mark_depot_sync_success(result)
+            log.info("Depot sync completed: %s", result)
+            return result
+        except Exception as exc:
+            mark_depot_sync_failure(str(exc))
+            raise
+
+
+async def depot_scheduler_loop(cron_expr: str | None = None) -> None:
+    cron_expr = settings.depot_sync_cron if cron_expr is None else cron_expr
+    cron_expr = (cron_expr or "").strip()
+    if not cron_expr:
+        log.info("Scheduled depot sync disabled because DEPOT_SYNC_CRON is empty")
         return
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+
+    schedule = parse_cron(cron_expr)
+    log.info(
+        "Scheduled depot sync enabled with DEPOT_SYNC_CRON=%s (every %s day(s))",
+        cron_expr,
+        settings.depot_sync_interval_days,
+    )
+
+    while True:
+        now = datetime.now()
+        next_run = schedule.next_after(now)
+        delay = max(0.0, (next_run - now).total_seconds())
+        log.info("Next depot-sync check at %s", next_run.isoformat(timespec="seconds"))
+        await asyncio.sleep(delay)
+        try:
+            await run_scheduled_depot_sync()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Scheduled depot sync failed")
+
+
+# --- Lifecycle ----------------------------------------------------------------
+
+def start_scheduler() -> list[asyncio.Task]:
+    tasks: list[asyncio.Task] = []
+
+    if (settings.sync_cron or "").strip():
+        tasks.append(asyncio.create_task(scheduler_loop()))
+    else:
+        log.info("Scheduled sync disabled because SYNC_CRON is empty")
+
+    if (settings.depot_sync_cron or "").strip():
+        tasks.append(asyncio.create_task(depot_scheduler_loop()))
+    else:
+        log.info("Scheduled depot sync disabled because DEPOT_SYNC_CRON is empty")
+
+    return tasks
+
+
+async def stop_scheduler(tasks: list[asyncio.Task] | asyncio.Task | None) -> None:
+    if tasks is None:
+        return
+    if isinstance(tasks, asyncio.Task):
+        tasks = [tasks]
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with suppress(asyncio.CancelledError):
+            await task

@@ -836,7 +836,7 @@ def _find_last_depot_valuation(session, depot_account):
         .where(
             (Transactions.financial_id.startswith(DEPOT_VALUATION_IMPORT_PREFIX))
             | (Payees.name == DEPOT_VALUATION_PAYEE)
-            | (Payees.name == "Market valuation adjustment")
+            | (Payees.name == "TR Market valuation adjustment")
         )
         .order_by(Transactions.date.desc(), Transactions.sort_order.desc())
     ).first()
@@ -856,15 +856,25 @@ def adjust_depot_balance(
     target_value_eur: float | int | str,
     date: str | None = None,
     dry_run: bool = False,
+    account_name: str | None = None,
+    offbudget: bool | None = None,
 ) -> Dict[str, Any]:
-    """Preview or create one explicit depot valuation adjustment transaction."""
+    """Preview or create one explicit depot valuation adjustment transaction.
+
+    account_name/offbudget default to the main Trade Republic depot account so
+    existing callers keep working unchanged. Pass a different account_name to
+    adjust a sub-depot account instead (see adjust_sub_depot_balances).
+    """
+    account_name = account_name or settings.actual_depot_account_name
+    offbudget = settings.actual_depot_account_offbudget if offbudget is None else offbudget
+
     target = Decimal(str(target_value_eur))
     adjustment_date = datetime.date.fromisoformat(date) if date else datetime.date.today()
 
     if settings.app_mode == "mock":
         return {
             "status": "mocked",
-            "account": settings.actual_depot_account_name,
+            "account": account_name,
             "payee": DEPOT_VALUATION_PAYEE,
             "date": adjustment_date.isoformat(),
             "last_valuation_date": None,
@@ -890,11 +900,10 @@ def adjust_depot_balance(
     password = settings.actual_password
     encryption_password = settings.actual_encryption_password
     budget_id = settings.actual_budget_id
-    depot_account_name = settings.actual_depot_account_name
 
     if not url:
         raise NotImplementedError(tr("actual.setting_missing", setting="ACTUAL_URL"))
-    if not depot_account_name:
+    if not account_name:
         raise NotImplementedError(tr("actual.setting_missing", setting="ACTUAL_DEPOT_ACCOUNT_NAME"))
 
     with Actual(
@@ -905,8 +914,8 @@ def adjust_depot_balance(
     ) as actual:
         session = actual.session
         depot_account = _configure_account_budget_status(
-            get_or_create_account(session, depot_account_name),
-            settings.actual_depot_account_offbudget,
+            get_or_create_account(session, account_name),
+            offbudget,
         )
         current_cents = session.exec(
             select(func.coalesce(func.sum(Transactions.amount), 0))
@@ -939,13 +948,11 @@ def adjust_depot_balance(
             return result
 
         notes = (
-            "Trade Republic Depotwert-Anpassung\n"
-            f"Actual balance before adjustment: {current}\n"
-            f"Target Trade Republic depot value: {cents_to_decimal(target_cents)}\n"
-            f"Adjustment delta: {delta}\n"
-            f"Last depot valuation: {last_valuation_date or 'none'}\n"
-            "Reason: Kursgewinn/-verlust seit letzter Depotbewertung oder sonstige Bewertungsdifferenz.\n"
-            "This is an explicit market-value correction, not a Trade Republic cashflow."
+            "Depotwert-Anpassung\n"
+            f" balance before adjustment: {current}\n"
+            f" Target Trade Republic depot value: {cents_to_decimal(target_cents)}\n"
+            f" Adjustment delta: {delta}\n"
+            f" Last depot valuation: {last_valuation_date or 'none'}\n"
         )
         tx = create_transaction(
             session,
@@ -963,6 +970,32 @@ def adjust_depot_balance(
         result["inserted"] = True
         result["transaction_id"] = tx.id
         return result
+
+
+def adjust_sub_depot_balances(
+    sub_depot_values: Dict[str, float],
+    date: str | None = None,
+    dry_run: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    """Adjust every configured sub-depot account to its computed value.
+
+    sub_depot_values is expected to come from fetch_depot_value()'s
+    "sub_depot_values" field (account name -> EUR value of the ISINs assigned
+    to it). Every account configured via ACTUAL_SUB_DEPOTS is adjusted, even
+    if it currently has no matching positions (value 0.0), so it stays in
+    sync rather than being silently skipped.
+    """
+    results: Dict[str, Dict[str, Any]] = {}
+    for account_name in settings.actual_sub_depots:
+        value = sub_depot_values.get(account_name, 0.0)
+        results[account_name] = adjust_depot_balance(
+            value,
+            date=date,
+            dry_run=dry_run,
+            account_name=account_name,
+            offbudget=settings.actual_sub_depot_offbudget,
+        )
+    return results
 
 
 def push_transactions(transactions: List[Dict]) -> Dict:

@@ -1364,14 +1364,39 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ target_value: targetValue })
         })
-        writeJson('import-report', data)
+
+        // Sub-depot accounts (ACTUAL_SUB_DEPOTS) are always adjusted using fresh
+        // Trade Republic data, independent of any manual override above.
+        let subResults = null
+        let subError = null
+        try {
+          subResults = await requestJson('/actual/sub-depot-adjustment', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(sessionPayload())
+          }, { busy: false })
+        } catch (error) {
+          subError = error
+        }
+
+        writeJson('import-report', { main: data, sub_accounts: subResults, sub_accounts_error: subError ? subError.message : null })
         const delta = typeof data.delta === 'number' ? data.delta.toFixed(2) : data.delta
         const since = data.last_valuation_date
           ? t('portfolio.since', { date: data.last_valuation_date })
           : t('portfolio.noPrevious')
-        const body = data.inserted
+        let body = data.inserted
           ? t('portfolio.inserted', { delta, account: data.account, since })
           : t('portfolio.unchanged', { account: data.account })
+
+        if (subResults && Object.keys(subResults).length > 0) {
+          const subSummary = Object.entries(subResults)
+            .map(([name, result]) => `${name}: ${result.inserted ? formatSignedMoney(result.delta) : '±0'}`)
+            .join(', ')
+          body += ` | ${subSummary}`
+        } else if (subError) {
+          body += ` | Sub-Depots: ${subError.message}`
+        }
+
         setStatus(t('portfolio.adjusted'), body, 'success')
         setDepotNotice(t('portfolio.adjusted'), body, 'success')
         return data

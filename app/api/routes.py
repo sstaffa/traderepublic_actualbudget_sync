@@ -22,6 +22,7 @@ from app.services.actual import encrypt_budget as actual_encrypt_budget
 from app.services.actual import preview_import as actual_preview_import
 from app.services.actual import reset_imported_transactions as actual_reset_import
 from app.services.actual import adjust_depot_balance as actual_adjust_depot_balance
+from app.services.actual import adjust_sub_depot_balances as actual_adjust_sub_depot_balances
 from app.services.scheduler import run_history_sync, run_scheduled_sync
 from app.services.state import mark_sync_failure, mark_sync_success
 from app.services.trade_republic_csv import parse_trade_republic_csv
@@ -194,6 +195,60 @@ async def adjust_actual_depot(payload: dict):
     dry_run = bool(payload.get("dry_run", False))
     try:
         return await asyncio.to_thread(actual_adjust_depot_balance, target_value, date, dry_run)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/actual/sub-depot-adjustment")
+async def adjust_actual_sub_depots(payload: Optional[dict] = None):
+    """Adjust every account configured via ACTUAL_SUB_DEPOTS using fresh Trade
+    Republic position data. Does NOT touch the main depot account, so it can
+    be combined with a manually-overridden /actual/depot-adjustment call."""
+    payload = payload or {}
+    session_id = payload.get("session_id") or None
+    date = payload.get("date") or None
+    dry_run = bool(payload.get("dry_run", False))
+    try:
+        depot_summary = await asyncio.to_thread(tr_fetch_depot_value, session_id)
+        return await asyncio.to_thread(
+            actual_adjust_sub_depot_balances,
+            depot_summary.get("sub_depot_values", {}),
+            date,
+            dry_run,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/actual/depot-adjustment-all")
+async def adjust_actual_depot_all(payload: Optional[dict] = None):
+    """Fetch the current TR depot value (already net of any configured
+    ACTUAL_SUB_DEPOTS ISINs) and adjust the main depot account plus every
+    configured sub-depot account in one call."""
+    payload = payload or {}
+    session_id = payload.get("session_id") or None
+    date = payload.get("date") or None
+    dry_run = bool(payload.get("dry_run", False))
+    try:
+        depot_summary = await asyncio.to_thread(tr_fetch_depot_value, session_id)
+        main_result = await asyncio.to_thread(
+            actual_adjust_depot_balance, depot_summary.get("depot_value", 0), date, dry_run
+        )
+        sub_results = await asyncio.to_thread(
+            actual_adjust_sub_depot_balances,
+            depot_summary.get("sub_depot_values", {}),
+            date,
+            dry_run,
+        )
+        return {"main": main_result, "sub_accounts": sub_results}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotImplementedError as e:

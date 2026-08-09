@@ -337,6 +337,47 @@ def _extract_position_value(position: Dict[str, Any]) -> Decimal:
     return Decimal("0")
 
 
+def split_sub_depot_values(
+    position_breakdown: List[Dict[str, Any]],
+    sub_depots: Dict[str, list] | None = None,
+) -> tuple[Decimal, Dict[str, float]]:
+    """Split position values between the main depot and configured sub-depots.
+
+    sub_depots maps account name -> list of ISINs (defaults to
+    settings.actual_sub_depots). Returns (excluded_total, sub_depot_values):
+    excluded_total is the sum to subtract from the main depot value, and
+    sub_depot_values maps every configured account name to its EUR total
+    (0.0 if none of its ISINs are currently held).
+
+    Pulled out as a standalone function (no TR API access) so the splitting
+    logic can be unit tested with a plain list of position dicts.
+    """
+    sub_depots = settings.actual_sub_depots if sub_depots is None else sub_depots
+    sub_depot_values: Dict[str, float] = {name: 0.0 for name in sub_depots}
+    if not sub_depots:
+        return Decimal("0"), sub_depot_values
+
+    isin_to_account: Dict[str, str] = {}
+    for account_name, isins in sub_depots.items():
+        for isin in isins:
+            isin_to_account[str(isin).upper()] = account_name
+
+    excluded_total = Decimal("0")
+    for position_summary in position_breakdown:
+        isin = str(position_summary.get("instrument_id") or "").upper()
+        target_account = isin_to_account.get(isin)
+        if not target_account:
+            continue
+        value = position_summary.get("value")
+        if value is None:
+            continue
+        value_decimal = Decimal(str(value))
+        sub_depot_values[target_account] += float(value_decimal)
+        excluded_total += value_decimal
+
+    return excluded_total, sub_depot_values
+
+
 def _extract_depot_value(compact_portfolio: Dict | None) -> Dict:
     positions = []
     if isinstance(compact_portfolio, dict):
@@ -619,13 +660,23 @@ async def _fetch_depot_value_summary(api) -> Dict:
         if size and avg:
             buy_cost += (size * avg).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     depot_value = Decimal(str(summary["depot_value"]))
+    position_breakdown = [_position_value_breakdown(position) for position in positions]
+
+    # Positions assigned to a configured sub-depot (e.g. an emergency-fund position
+    # tracked in its own Actual account) are excluded from the main depot value here
+    # and instead reported separately in `sub_depot_values`, keyed by account name.
+    excluded_total, sub_depot_values = split_sub_depot_values(position_breakdown)
+    depot_value -= excluded_total
+
     summary.update({
         "currency": currency,
         "cash_value": float(cash_value),
         "buy_cost": float(buy_cost),
         "total_buy_cost": float(cash_value + buy_cost),
+        "depot_value": float(depot_value),
         "total_value": float(cash_value + depot_value),
-        "position_breakdown": [_position_value_breakdown(position) for position in positions],
+        "sub_depot_values": sub_depot_values,
+        "position_breakdown": position_breakdown,
         "raw": {
             "positions": positions,
             "cash": cash_response,
@@ -652,6 +703,7 @@ def fetch_depot_value(session_id: str | None = None) -> Dict:
                 "valued": True,
                 "error": None,
             }],
+            "sub_depot_values": {name: 0.0 for name in settings.actual_sub_depots},
         }
 
     _load_sessions()

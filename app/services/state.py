@@ -53,3 +53,24 @@ def mark_sync_failure(error: str, *, scheduled: bool) -> None:
     state["last_sync_scheduled"] = scheduled
     state["last_sync_error"] = error
     save_state(state)
+
+
+def mark_depot_sync_success(result: dict[str, Any]) -> None:
+    """Separate from mark_sync_success: depot-value adjustments run on their
+    own schedule (DEPOT_SYNC_CRON) and must not affect the transaction sync's
+    `last_successful_sync_at`, which the incremental cash-transaction sync
+    uses as its `from_date` cursor."""
+    state = load_state()
+    now = datetime.now(timezone.utc).isoformat()
+    state["last_depot_sync_at"] = now
+    state["last_depot_sync_result"] = result
+    state.pop("last_depot_sync_error", None)
+    save_state(state)
+
+
+def mark_depot_sync_failure(error: str) -> None:
+    state = load_state()
+    now = datetime.now(timezone.utc).isoformat()
+    state["last_depot_sync_attempt_at"] = now
+    state["last_depot_sync_error"] = error
+    save_state(state)

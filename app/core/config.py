@@ -1,5 +1,6 @@
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 try:
     from dotenv import load_dotenv
@@ -15,6 +16,34 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.lower() in ("true", "1", "yes", "on")
+
+
+def _parse_sub_depots(raw: str) -> dict[str, list[str]]:
+    """Parse ACTUAL_SUB_DEPOTS as JSON: {"<account name>": ["<ISIN>", ...], ...}.
+
+    Extensible to any number of sub-accounts, each with any number of ISINs.
+    ISINs are normalized to uppercase so lookups are case-insensitive.
+    Positions matching a listed ISIN are excluded from the main depot account
+    and tracked separately in the named sub-account instead.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    result: dict[str, list[str]] = {}
+    for account_name, isins in parsed.items():
+        if isinstance(isins, str):
+            isins = [isins]
+        if not isinstance(isins, (list, tuple)):
+            continue
+        result[str(account_name)] = [str(isin).strip().upper() for isin in isins if str(isin).strip()]
+    return result
 
 
 @dataclass
@@ -42,11 +71,21 @@ class Settings:
     autocreate_transfer: bool = _env_bool("TR_AUTOCREATE_TRANSFER", False)
     transfer_match_days: int = int(os.getenv("TR_TRANSFER_MATCH_DAYS", "3"))
     transfer_match_tolerance_cents: int = int(os.getenv("TR_TRANSFER_MATCH_TOLERANCE_CENTS", "0"))
-    
-    run_rules_after_sync: bool = _env_bool("RUN_RULES_AFTER_SYNC", True)
-    run_rules_on_all_transactions: bool = _env_bool("RUN_RULES_ON_ALL_TRANSACTIONS", True)
     include_status_in_notes: bool = _env_bool("INCLUDE_STATUS_IN_NOTES", False)
     include_raw_in_notes: bool = _env_bool("INCLUDE_RAW_IN_NOTES", False)
+    run_rules_after_sync: bool = _env_bool("RUN_RULES_AFTER_SYNC", True)
+    run_rules_on_all_transactions: bool = _env_bool("RUN_RULES_ON_ALL_TRANSACTIONS", True)
+    actual_sub_depots: dict[str, list[str]] = field(
+        default_factory=lambda: _parse_sub_depots(os.getenv("ACTUAL_SUB_DEPOTS", ""))
+    )
+    actual_sub_depot_offbudget: bool = _env_bool("ACTUAL_SUB_DEPOT_OFFBUDGET", True)
+    # Depot valuation sync: adjusts the main depot account + all ACTUAL_SUB_DEPOTS
+    # accounts to their current market value. Does NOT touch cash accounts -
+    # those are covered by the regular SYNC_CRON transaction sync.
+    # DEPOT_SYNC_CRON is checked daily at the given time; the adjustment only
+    # actually runs once DEPOT_SYNC_INTERVAL_DAYS have passed since the last run.
+    depot_sync_cron: str = os.getenv("DEPOT_SYNC_CRON", "0 18 * * *")
+    depot_sync_interval_days: int = int(os.getenv("DEPOT_SYNC_INTERVAL_DAYS", "30"))
 
 
 settings = Settings()
