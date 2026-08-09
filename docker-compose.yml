@@ -15,7 +15,7 @@ services:
       - ./data:/data
     environment:
       - TZ=Europe/Berlin
-      - APP_MODE: ${APP_MODE:-production}
+      - APP_MODE=${APP_MODE:-production}
     networks:
       - backend
 
@@ -27,6 +27,7 @@ services:
       # Grant Watchtower access to the Docker socket to inspect and restart containers
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      - TZ=Europe/Berlin
       - WATCHTOWER_POLL_INTERVAL=300 # Check for updated images every 5 minutes (300 seconds)
       - WATCHTOWER_CLEANUP=true      # Automatically remove old, unused images after updating
     # Restrict Watchtower to only monitor the 'tr-sync' container

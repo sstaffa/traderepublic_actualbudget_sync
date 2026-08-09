@@ -19,7 +19,7 @@ services:
     environment:
       - TZ=Europe/Berlin
       # Use the value from .env (APP_MODE). If not set, default to 'production'
-      - APP_MODE: ${APP_MODE:-production}
+      - APP_MODE=${APP_MODE:-production}
     networks:
       - backend
 
