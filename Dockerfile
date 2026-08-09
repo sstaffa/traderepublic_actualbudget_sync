@@ -1,10 +1,10 @@
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV APP_MODE=production
 
-# Install runtime libraries. All Python dependencies publish binary wheels.
-COPY requirements.txt /app/requirements.txt
+# 1. Install system dependencies (rarely change, cached long-term)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libnss3 \
@@ -28,22 +28,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-3-0 \
     fonts-liberation \
     gosu \
-    && pip install --no-cache-dir -r /app/requirements.txt \
-    && python -m playwright install --only-shell chromium \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only runtime files.
+# 2. Install Python packages (only re-runs when requirements.txt changes)
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt \
+    && python -m playwright install --only-shell chromium
+
+# 3. Copy application code and set permissions
 COPY app /app/app
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /data \
-    && chown -R appuser:appuser /app /data /ms-playwright
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
-ENV APP_MODE=production
+    && chown -R appuser:appuser /app /data /ms-playwright \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8000
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

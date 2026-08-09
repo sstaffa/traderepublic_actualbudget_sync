@@ -1,0 +1,19 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "Disable updates for all Python packages by default",
+      "matchManagers": ["pip_requirements"],
+      "enabled": false
+    },
+    {
+      "description": "Enable auto-updates only for pytr and actualpy",
+      "matchManagers": ["pip_requirements"],
+      "matchPackageNames": ["pytr", "actualpy"],
+      "enabled": true,
+      "automerge": true,
+      "rangeStrategy": "replace"
+    }
+  ]
+}
