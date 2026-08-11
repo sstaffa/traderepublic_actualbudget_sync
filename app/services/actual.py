@@ -37,9 +37,12 @@ def _find_transaction_by_financial_id(session, imported_id: str | None):
         from sqlmodel import select
     except ImportError:
         return None
-    return session.exec(
-        select(Transactions).where(Transactions.financial_id == imported_id, Transactions.tombstone == 0)
-    ).first()
+    query = select(Transactions).where(Transactions.financial_id == imported_id)
+    if not settings.skip_tombstoned_duplicates:
+        # Default: only active rows count as duplicates, so a transaction
+        # deleted in Actual is re-imported on the next sync.
+        query = query.where(Transactions.tombstone == 0)
+    return session.exec(query).first()
 
 
 def _extract_tr_timestamps(notes: str | None) -> list[datetime.datetime]:
@@ -996,6 +999,77 @@ def adjust_sub_depot_balances(
             offbudget=settings.actual_sub_depot_offbudget,
         )
     return results
+
+
+def reset_sync_and_compact() -> Dict[str, Any]:
+    """Equivalent of "Reset sync" in the Actual frontend.
+
+    Actual stores one base database plus an append-only list of CRDT change
+    messages. Soft-deleted (tombstone=1) rows and their change history are only
+    discarded when the file is cleaned and re-uploaded as a new base database,
+    which is what actually shrinks the server-side SQLite file.
+
+    Two steps, in this order:
+
+    1. `Actual.cleanup()` runs the same statements as the frontend's reset.ts:
+       it clears messages_crdt/messages_clock, deletes every tombstone=1 row
+       and runs ANALYZE + VACUUM on the local copy.
+    2. `Actual.reupload_budget()` resets the file on the server and uploads the
+       cleaned copy as the new base.
+
+    Deliberately manual (no schedule): every other client of this budget must
+    re-download it afterwards, and changes made elsewhere during the operation
+    are lost.
+    """
+    if settings.app_mode == "mock":
+        return {
+            "status": "mocked",
+            "reset": False,
+            "tombstoned_transactions": 0,
+            "active_transactions": 0,
+        }
+
+    try:
+        from actual import Actual
+        from actual.database import Transactions
+        from sqlalchemy import func
+        from sqlmodel import select
+    except ImportError as e:
+        raise NotImplementedError(tr("actual.package_required", error=e))
+
+    if not settings.actual_url:
+        raise NotImplementedError(tr("actual.setting_missing", setting="ACTUAL_URL"))
+
+    with Actual(
+        base_url=settings.actual_url,
+        password=settings.actual_password or None,
+        file=settings.actual_budget_id or None,
+        encryption_password=settings.actual_encryption_password or None,
+    ) as actual:
+        session = actual.session
+        tombstoned = session.exec(
+            select(func.count()).select_from(Transactions).where(Transactions.tombstone == 1)
+        ).one()
+        active = session.exec(
+            select(func.count()).select_from(Transactions).where(Transactions.tombstone == 0)
+        ).one()
+
+        # cleanup() opens its own SQLite connection and runs VACUUM against the
+        # same file, so release the SQLAlchemy session first to avoid lock
+        # contention on the database.
+        session.commit()
+        session.close()
+        actual.engine.dispose()
+
+        actual.cleanup()
+        actual.reupload_budget()
+
+        return {
+            "status": "ok",
+            "reset": True,
+            "tombstoned_transactions": int(tombstoned),
+            "active_transactions": int(active),
+        }
 
 
 def push_transactions(transactions: List[Dict]) -> Dict:

@@ -23,6 +23,12 @@ from app.services.actual import preview_import as actual_preview_import
 from app.services.actual import reset_imported_transactions as actual_reset_import
 from app.services.actual import adjust_depot_balance as actual_adjust_depot_balance
 from app.services.actual import adjust_sub_depot_balances as actual_adjust_sub_depot_balances
+from app.services.actual import reset_sync_and_compact as actual_reset_sync
+from app.mapping.event_types import (
+    EVENT_TYPE_GROUPS,
+    excluded_event_types_source,
+    get_excluded_event_types,
+)
 from app.services.scheduler import run_history_sync, run_scheduled_sync
 from app.services.state import mark_sync_failure, mark_sync_success
 from app.services.trade_republic_csv import parse_trade_republic_csv
@@ -351,3 +357,36 @@ async def sync_csv_import(payload: dict):
     except Exception as e:
         mark_sync_failure(str(e), scheduled=False)
         raise
+
+
+# --- Event-type blocklist (read-only, configured via TR_EXCLUDED_EVENT_TYPES) -
+
+@router.get("/settings/event-filters")
+async def read_event_filters():
+    """Static catalogue of known event types plus the blocklist currently in
+    effect. The blocklist is re-read on every request, so edits to a mounted
+    .env file take effect without restarting the container."""
+    excluded = get_excluded_event_types()
+    return {
+        "excluded_event_types": excluded,
+        "event_type_groups": EVENT_TYPE_GROUPS,
+        "source": excluded_event_types_source(),
+        "unknown_excluded": [
+            event_type
+            for event_type in excluded
+            if event_type not in {e for group in EVENT_TYPE_GROUPS.values() for e in group}
+        ],
+    }
+
+
+@router.post("/actual/reset-sync")
+async def reset_actual_sync():
+    """Clean the budget (drop soft-deleted rows and change history, VACUUM) and
+    re-upload it as a new base file. Manual only - other clients must
+    re-download the budget afterwards."""
+    try:
+        return await asyncio.to_thread(actual_reset_sync)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

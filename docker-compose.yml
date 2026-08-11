@@ -13,6 +13,7 @@ services:
       # Mount only the data directory for persistent files (e.g., pytr cookies or databases)
       # Do NOT mount the local source code here to avoid overriding the container's built image
       - ./data:/data
+      - ./.env:/app/.env:ro
     environment:
       - TZ=Europe/Berlin
       - APP_MODE=${APP_MODE:-production}

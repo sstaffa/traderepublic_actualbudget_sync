@@ -110,6 +110,46 @@
         align-items: center;
       }
 
+      .event-filter-list {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        max-height: 320px;
+        overflow-y: auto;
+      }
+
+      .event-filter-group h3 {
+        margin: 0 0 6px;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        opacity: 0.65;
+      }
+
+      .event-filter-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 2px 0;
+        font-size: 0.88rem;
+        word-break: break-all;
+      }
+
+      .event-filter-row.excluded > span:first-child {
+        text-decoration: line-through;
+        opacity: 0.55;
+      }
+
+      .event-filter-badge {
+        flex: 0 0 auto;
+        font-size: 0.72rem;
+        padding: 1px 7px;
+        border-radius: 999px;
+        border: 1px solid currentColor;
+        opacity: 0.8;
+      }
+
       button {
         border: 1px solid transparent;
         border-radius: 6px;
@@ -733,11 +773,24 @@
             </div>
           </details>
           <div class="panel" style="margin-top: 10px;">
+            <h2 data-i18n="filters.title">Event-Typ-Filter</h2>
+            <p class="muted" style="margin-bottom: 10px;" data-i18n="filters.body">Ausgeschlossene Event-Typen werden gar nicht erst nach Actual importiert. Konfiguration ausschließlich über TR_EXCLUDED_EVENT_TYPES in der .env. Unbekannte, neue Event-Typen werden immer importiert.</p>
+            <p id="event-filter-source" class="muted" style="margin-bottom: 12px; font-size: 0.85rem;"></p>
+            <div id="event-filter-list" class="event-filter-list"></div>
+            <div class="toolbar" style="margin-top: 12px;">
+              <button id="btn-event-filter-reload" class="secondary" type="button" data-i18n="filters.reload">Neu laden</button>
+            </div>
+          </div>
+          <div class="panel" style="margin-top: 10px;">
             <h2 data-i18n="maintenance.title">Wartung</h2>
             <p class="muted" style="margin-bottom: 12px;" data-i18n="maintenance.body">Reset nur verwenden, wenn du importierte Trade-Republic-Buchungen aus Actual entfernen und danach sauber neu importieren willst.</p>
             <div class="toolbar">
               <button id="btn-reset-preview" class="secondary" type="button" data-i18n="maintenance.check">Reset prüfen</button>
               <button id="btn-reset-run" class="danger" type="button" data-i18n="maintenance.reset">TR-Import zurücksetzen</button>
+            </div>
+            <p class="muted" style="margin: 14px 0 12px;" data-i18n="maintenance.resetSyncBody">Lädt die Budget-Datei komplett neu auf den Actual-Server und verwirft dabei gelöschte Buchungen und die Änderungshistorie. Andere Geräte müssen das Budget danach neu laden.</p>
+            <div class="toolbar">
+              <button id="btn-actual-reset-sync" class="danger" type="button" data-i18n="maintenance.resetSync">Actual Reset-Sync</button>
             </div>
           </div>
         </div>
@@ -1554,6 +1607,92 @@
         try { await pushMapped() } catch (error) { setStatus(t('status.pushFailed'), error.message, 'error') }
       })
 
+      let eventFilterState = { groups: {}, excluded: [], source: '', unknown: [] }
+
+      function renderEventFilters() {
+        const container = document.getElementById('event-filter-list')
+        const sourceLine = document.getElementById('event-filter-source')
+        const groups = eventFilterState.groups || {}
+        const excluded = new Set(eventFilterState.excluded || [])
+
+        const isLive = String(eventFilterState.source || '').startsWith('env-file:')
+        sourceLine.textContent = isLive
+          ? t('filters.sourceLive', { path: String(eventFilterState.source).slice('env-file:'.length) })
+          : t('filters.sourceStatic')
+
+        const groupNames = Object.keys(groups)
+        if (!groupNames.length) {
+          container.innerHTML = `<p class="muted">${escapeHtml(t('filters.loadFailed'))}</p>`
+          return
+        }
+
+        container.innerHTML = groupNames
+          .map((groupName) => {
+            const rows = (groups[groupName] || [])
+              .map((eventType) => {
+                const off = excluded.has(eventType)
+                const cls = off ? 'event-filter-row excluded' : 'event-filter-row'
+                const badge = off ? `<span class="event-filter-badge">${escapeHtml(t('filters.excluded'))}</span>` : ''
+                return `<div class="${cls}"><span>${escapeHtml(eventType)}</span>${badge}</div>`
+              })
+              .join('')
+            return `
+              <div class="event-filter-group">
+                <h3>${escapeHtml(t('filters.group.' + groupName))}</h3>
+                ${rows}
+              </div>
+            `
+          })
+          .join('')
+
+        // Event types excluded in .env that this build does not know about:
+        // surfaced so typos do not silently do nothing.
+        const unknown = eventFilterState.unknown || []
+        if (unknown.length) {
+          container.innerHTML += `
+            <div class="event-filter-group">
+              <h3>${escapeHtml(t('filters.unknownTitle'))}</h3>
+              ${unknown.map((e) => `<div class="event-filter-row excluded"><span>${escapeHtml(e)}</span></div>`).join('')}
+            </div>
+          `
+        }
+      }
+
+      async function loadEventFilters() {
+        const data = await requestJson('/settings/event-filters', {}, { busy: false })
+        eventFilterState = {
+          groups: data.event_type_groups || {},
+          excluded: data.excluded_event_types || [],
+          source: data.source || '',
+          unknown: data.unknown_excluded || []
+        }
+        renderEventFilters()
+        return data
+      }
+
+      async function runActualResetSync() {
+        if (!confirm(t('maintenance.resetSyncConfirm'))) return null
+        const data = await requestJson('/actual/reset-sync', { method: 'POST' })
+        writeJson('import-report', data)
+        setStatus(
+          t('maintenance.resetSyncDone'),
+          t('maintenance.resetSyncDoneBody', {
+            tombstones: data.tombstoned_transactions ?? 0,
+            active: data.active_transactions ?? 0
+          }),
+          'success'
+        )
+        return data
+      }
+
+      document.getElementById('btn-event-filter-reload').addEventListener('click', async () => {
+        try { await loadEventFilters() } catch (error) { setStatus(t('filters.loadFailed'), error.message, 'error') }
+      })
+
+      document.getElementById('btn-actual-reset-sync').addEventListener('click', async () => {
+        try { await runActualResetSync() } catch (error) { setStatus(t('maintenance.resetSyncFailed'), error.message, 'error') }
+      })
+
       document.getElementById('btn-reset-preview').addEventListener('click', async () => {
         try { await resetTradeRepublicImport(true) } catch (error) { setStatus(t('status.resetCheckFailed'), error.message, 'error') }
       })
@@ -1596,12 +1735,16 @@
         if (lastServerStatus) renderServerStatus(lastServerStatus)
         if (lastPreview) renderPreview(lastPreview)
         if (lastDepotPositionData) renderDepotPositions(lastDepotPositionData)
+        renderEventFilters()
       })
 
       window.i18n.applyTranslations()
       setSessionId(currentSessionId)
       updatePushButton()
       restoreSessionFromServer()
+      loadEventFilters().catch(() => {
+        // Non-fatal: the panel simply stays empty until the user hits reload.
+      })
     </script>
   </body>
 </html>

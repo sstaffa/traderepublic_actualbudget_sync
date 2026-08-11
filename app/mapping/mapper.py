@@ -1,6 +1,7 @@
 from typing import List, Dict, Any
 from datetime import datetime
 from app.core.config import settings
+from app.mapping.event_types import get_excluded_event_types
 import json
 
 
@@ -128,12 +129,41 @@ def _build_memo(tx: Dict[str, Any], event_type: str, status: str, raw: Dict[str,
     return "\n".join(parts)
 
 
+LAST_FILTER_META: Dict[str, Any] = {}
+
+
+def get_last_filter_meta() -> Dict[str, Any]:
+    """Counts from the most recent map_pytr_to_actual() call, so the UI and
+    sync report can show how many items were dropped and why."""
+    return dict(LAST_FILTER_META)
+
+
 def map_pytr_to_actual(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Map real or mocked Trade Republic items to the Actual schema."""
+    """Map real or mocked Trade Republic items to the Actual schema.
+
+    Event types listed in the blocklist are dropped here, before anything
+    reaches Actual. Filtering at the source (rather than importing and letting
+    an Actual rule soft-delete afterwards) avoids creating tombstoned rows and
+    the repeated re-insert cycle they cause on every subsequent sync.
+    """
+    excluded = set(get_excluded_event_types())
+    seen_event_types: List[str] = []
+    excluded_counts: Dict[str, int] = {}
+    skipped_status = 0
+
     out = []
     for tx in transactions:
         status = (tx.get("status") or "").upper()
         if status and status not in {"EXECUTED", "PENDING"}:
+            skipped_status += 1
+            continue
+
+        raw_event_type = _extract_event_type(tx)
+        normalized_event_type = (raw_event_type or "").strip().upper()
+        if normalized_event_type and normalized_event_type not in seen_event_types:
+            seen_event_types.append(normalized_event_type)
+        if normalized_event_type and normalized_event_type in excluded:
+            excluded_counts[normalized_event_type] = excluded_counts.get(normalized_event_type, 0) + 1
             continue
 
         date = _parse_date(tx)
@@ -141,7 +171,7 @@ def map_pytr_to_actual(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any
         payee = _extract_payee(tx) or "(unknown)"
         source_id = _extract_source_id(tx)
         currency = _extract_currency(tx)
-        event_type = _extract_event_type(tx)
+        event_type = raw_event_type
         account_key, transfer_kind = _classify_event(event_type)
         pending = status == "PENDING"
         cleared = status == "EXECUTED"
@@ -160,4 +190,15 @@ def map_pytr_to_actual(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any
             "account_key": account_key,
             "transfer_kind": transfer_kind,
         })
+
+    global LAST_FILTER_META
+    LAST_FILTER_META = {
+        "input_count": len(transactions),
+        "mapped_count": len(out),
+        "skipped_by_status": skipped_status,
+        "excluded_by_event_type": sum(excluded_counts.values()),
+        "excluded_breakdown": excluded_counts,
+        "seen_event_types": sorted(seen_event_types),
+    }
+
     return out

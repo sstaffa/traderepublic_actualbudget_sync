@@ -16,6 +16,7 @@ services:
       # mount workspace for easier development (read-write) so pytr can persist cookies
       - ./traderepublic_actualbudget_sync:/app:rw
       - ./data:/data
+      - ./.env:/app/.env:ro
     environment:
       - TZ=Europe/Berlin
       # Use the value from .env (APP_MODE). If not set, default to 'production'

@@ -97,3 +97,39 @@ def test_depot_sync_defaults(monkeypatch, reloadable_config):
 
     assert reloaded.settings.depot_sync_cron == "0 18 * * *"
     assert reloaded.settings.depot_sync_interval_days == 30
+
+
+def test_run_rules_on_all_transactions_defaults_off(monkeypatch, reloadable_config):
+    """Re-running all rules on every sync creates avoidable CRDT messages and
+    database growth, so it must be opt-in."""
+    monkeypatch.delenv("RUN_RULES_ON_ALL_TRANSACTIONS", raising=False)
+
+    reloaded = importlib.reload(reloadable_config)
+
+    assert reloaded.settings.run_rules_on_all_transactions is False
+
+
+def test_excluded_event_types_parsed_from_csv_env(monkeypatch, reloadable_config):
+    monkeypatch.setenv("TR_EXCLUDED_EVENT_TYPES", "card_verification, SAVEBACK_AGGREGATE ,")
+
+    reloaded = importlib.reload(reloadable_config)
+
+    assert reloaded.settings.tr_excluded_event_types == ["CARD_VERIFICATION", "SAVEBACK_AGGREGATE"]
+
+
+def test_excluded_event_types_default_empty(monkeypatch, reloadable_config):
+    monkeypatch.delenv("TR_EXCLUDED_EVENT_TYPES", raising=False)
+
+    reloaded = importlib.reload(reloadable_config)
+
+    assert reloaded.settings.tr_excluded_event_types == []
+
+
+def test_skip_tombstoned_duplicates_defaults_off(monkeypatch, reloadable_config):
+    """Default keeps the previous behaviour: transactions deleted in Actual
+    are re-imported on the next sync."""
+    monkeypatch.delenv("TR_SKIP_TOMBSTONED_DUPLICATES", raising=False)
+
+    reloaded = importlib.reload(reloadable_config)
+
+    assert reloaded.settings.skip_tombstoned_duplicates is False
