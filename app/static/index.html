@@ -348,6 +348,11 @@
         color: #93370d;
       }
 
+      .position-status.sub-depot {
+        background: #e0eaff;
+        color: #2d3f8f;
+      }
+
       .session-card {
         min-width: 260px;
         text-align: right;
@@ -1322,8 +1327,15 @@
             const reason = position.error === 'missing_price'
               ? t('portfolio.missingPrice')
               : (position.error || '')
-            const statusText = position.valued ? t('portfolio.valued') : t('portfolio.unvalued')
-            const statusClass = position.valued ? '' : ' unvalued'
+            // "Valued" on every row carries no information. What matters is
+            // which account a position feeds - the main depot or a sub-depot -
+            // and whether pricing failed, which would silently understate the total.
+            const statusText = position.valued
+              ? (position.sub_depot || t('portfolio.mainDepot'))
+              : t('portfolio.unvalued')
+            const statusClass = position.valued
+              ? (position.sub_depot ? ' sub-depot' : '')
+              : ' unvalued'
             const statusTitle = reason ? ` title="${escapeAttr(reason)}"` : ''
             const value = position.valued
               ? `${formatPositionNumber(position.value, 2)} EUR`
@@ -1414,7 +1426,19 @@
       async function adjustDepotBalance() {
         cancelScheduledDepotPreview()
         const targetValue = parseMoneyInput(document.getElementById('depot-target-value').value)
-        const confirmed = confirm(t('portfolio.confirm', { value: targetValue }))
+        // Sub-depot accounts are adjusted in the same run, so name them up front
+        // instead of surprising the user with extra transactions afterwards.
+        const subEntries = Object.entries(lastDepotPositionData?.sub_depot_values || {})
+        const confirmed = confirm(
+          subEntries.length
+            ? t('portfolio.confirmWithSubDepots', {
+                value: targetValue,
+                entries: subEntries
+                  .map(([name, value]) => `${name}: ${Number(value || 0).toFixed(2)} EUR`)
+                  .join(', ')
+              })
+            : t('portfolio.confirm', { value: targetValue })
+        )
         if (!confirmed) return null
         setStatus(t('portfolio.adjusting'), t('portfolio.adjustingBody'))
         const data = await requestJson('/actual/depot-adjustment', {
@@ -1493,9 +1517,11 @@
             }
           }
           if (!silent) {
+            // The main depot value is based only on positions that were not
+            // moved to a sub-depot, so report that count rather than the total.
             const positions = typeof data.positions === 'number'
               ? t('portfolio.positions', {
-                  valued: data.valued_positions ?? data.positions,
+                  valued: data.main_depot_positions ?? data.valued_positions ?? data.positions,
                   total: data.positions
                 })
               : ''

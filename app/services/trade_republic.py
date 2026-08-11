@@ -368,6 +368,9 @@ def split_sub_depot_values(
         target_account = isin_to_account.get(isin)
         if not target_account:
             continue
+        # Annotate so callers can tell which account a position belongs to
+        # without repeating the ISIN lookup.
+        position_summary["sub_depot"] = target_account
         value = position_summary.get("value")
         if value is None:
             continue
@@ -668,6 +671,12 @@ async def _fetch_depot_value_summary(api) -> Dict:
     excluded_total, sub_depot_values = split_sub_depot_values(position_breakdown)
     depot_value -= excluded_total
 
+    # Positions moved to a sub-depot no longer contribute to depot_value, so
+    # report separately how many positions the main depot value is based on.
+    main_depot_positions = sum(
+        1 for position in position_breakdown if not position.get("sub_depot")
+    )
+
     summary.update({
         "currency": currency,
         "cash_value": float(cash_value),
@@ -676,6 +685,7 @@ async def _fetch_depot_value_summary(api) -> Dict:
         "depot_value": float(depot_value),
         "total_value": float(cash_value + depot_value),
         "sub_depot_values": sub_depot_values,
+        "main_depot_positions": main_depot_positions,
         "position_breakdown": position_breakdown,
         "raw": {
             "positions": positions,
