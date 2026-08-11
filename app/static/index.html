@@ -775,11 +775,7 @@
           <div class="panel" style="margin-top: 10px;">
             <h2 data-i18n="filters.title">Event-Typ-Filter</h2>
             <p class="muted" style="margin-bottom: 10px;" data-i18n="filters.body">Ausgeschlossene Event-Typen werden gar nicht erst nach Actual importiert. Konfiguration ausschließlich über TR_EXCLUDED_EVENT_TYPES in der .env. Unbekannte, neue Event-Typen werden immer importiert.</p>
-            <p id="event-filter-source" class="muted" style="margin-bottom: 12px; font-size: 0.85rem;"></p>
             <div id="event-filter-list" class="event-filter-list"></div>
-            <div class="toolbar" style="margin-top: 12px;">
-              <button id="btn-event-filter-reload" class="secondary" type="button" data-i18n="filters.reload">Neu laden</button>
-            </div>
           </div>
           <div class="panel" style="margin-top: 10px;">
             <h2 data-i18n="maintenance.title">Wartung</h2>
@@ -1209,7 +1205,16 @@
         if (!lastMappedTransactions.length) {
           throw new Error(t('push.noData'))
         }
-        const confirmed = confirm(t('push.confirm', { count: lastMappedTransactions.length }))
+        // "Mapped" is the number of transactions that were checked, not the
+        // number that will actually be inserted: duplicates are counted too.
+        // Show both so the dialog matches the import plan above it.
+        const checked = lastMappedTransactions.length
+        const duplicates = Number(lastPreview?.actions?.duplicate || 0)
+        const confirmed = confirm(
+          lastPreview
+            ? t('push.confirmChecked', { checked, new: checked - duplicates })
+            : t('push.confirm', { count: checked })
+        )
         if (!confirmed) return null
         setStatus(t('push.running'), t('push.runningBody'))
         const data = await requestJson('/tr/push-mapped', {
@@ -1494,11 +1499,22 @@
                   total: data.positions
                 })
               : ''
-            const cash = typeof data.cash_value === 'number'
-              ? t('portfolio.cash', { value: data.cash_value.toFixed(2), currency: data.currency || 'EUR' })
+            // Positions assigned to a sub-depot are not part of depot_value,
+            // so list them separately instead of leaving them unaccounted for.
+            const subEntries = Object.entries(data.sub_depot_values || {})
+            const subDepots = subEntries.length
+              ? t('portfolio.subDepots', {
+                  entries: subEntries
+                    .map(([name, value]) => `${name}: ${Number(value || 0).toFixed(2)} ${data.currency || 'EUR'}`)
+                    .join(', ')
+                })
               : ''
-            const total = typeof data.total_value === 'number'
-              ? t('portfolio.total', { value: data.total_value.toFixed(2), currency: data.currency || 'EUR' })
+            const subTotal = subEntries.reduce((sum, [, value]) => sum + Number(value || 0), 0)
+            const total = subEntries.length
+              ? t('portfolio.total', {
+                  value: ((data.depot_value ?? 0) + subTotal).toFixed(2),
+                  currency: data.currency || 'EUR'
+                })
               : ''
             setStatus(
               t('portfolio.loaded'),
@@ -1506,7 +1522,7 @@
                 value: (data.depot_value ?? 0).toFixed(2),
                 currency: data.currency || 'EUR',
                 positions,
-                cash,
+                subDepots,
                 total
               }),
               'success'
@@ -1607,18 +1623,12 @@
         try { await pushMapped() } catch (error) { setStatus(t('status.pushFailed'), error.message, 'error') }
       })
 
-      let eventFilterState = { groups: {}, excluded: [], source: '', unknown: [] }
+      let eventFilterState = { groups: {}, excluded: [], unknown: [] }
 
       function renderEventFilters() {
         const container = document.getElementById('event-filter-list')
-        const sourceLine = document.getElementById('event-filter-source')
         const groups = eventFilterState.groups || {}
         const excluded = new Set(eventFilterState.excluded || [])
-
-        const isLive = String(eventFilterState.source || '').startsWith('env-file:')
-        sourceLine.textContent = isLive
-          ? t('filters.sourceLive', { path: String(eventFilterState.source).slice('env-file:'.length) })
-          : t('filters.sourceStatic')
 
         const groupNames = Object.keys(groups)
         if (!groupNames.length) {
@@ -1663,7 +1673,6 @@
         eventFilterState = {
           groups: data.event_type_groups || {},
           excluded: data.excluded_event_types || [],
-          source: data.source || '',
           unknown: data.unknown_excluded || []
         }
         renderEventFilters()
@@ -1684,10 +1693,6 @@
         )
         return data
       }
-
-      document.getElementById('btn-event-filter-reload').addEventListener('click', async () => {
-        try { await loadEventFilters() } catch (error) { setStatus(t('filters.loadFailed'), error.message, 'error') }
-      })
 
       document.getElementById('btn-actual-reset-sync').addEventListener('click', async () => {
         try { await runActualResetSync() } catch (error) { setStatus(t('maintenance.resetSyncFailed'), error.message, 'error') }

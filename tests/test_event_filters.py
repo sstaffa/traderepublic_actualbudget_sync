@@ -1,7 +1,6 @@
 import pytest
 
 from app.core.config import settings
-from app.mapping import event_types
 from app.mapping.event_types import (
     EVENT_TYPE_GROUPS,
     KNOWN_EVENT_TYPES,
@@ -12,21 +11,12 @@ from app.mapping.mapper import get_last_filter_meta, map_pytr_to_actual
 
 
 @pytest.fixture
-def no_env_file(monkeypatch, tmp_path):
-    """No .env file present: the blocklist comes from the process environment
-    captured at startup."""
-    monkeypatch.setenv("TR_ENV_FILE", str(tmp_path / "missing.env"))
-    monkeypatch.setattr(settings, "tr_excluded_event_types", [])
-    return tmp_path
-
-
-@pytest.fixture
-def env_file(monkeypatch, tmp_path):
-    """A readable .env file: it is authoritative and re-read on every call."""
-    path = tmp_path / ".env"
-    monkeypatch.setenv("TR_ENV_FILE", str(path))
-    monkeypatch.setattr(settings, "tr_excluded_event_types", [])
-    return path
+def excluded(monkeypatch):
+    """Set the blocklist the way the process sees it at startup."""
+    def _set(values):
+        monkeypatch.setattr(settings, "tr_excluded_event_types", list(values))
+    _set([])
+    return _set
 
 
 def _tx(event_type: str, source_id: str = "id-1", amount: float = -10.0) -> dict:
@@ -70,59 +60,30 @@ def test_normalize_handles_csv_and_casing():
     ]
 
 
-# --- resolution from environment / .env --------------------------------------
+# --- resolution from the environment ----------------------------------------
 
-def test_falls_back_to_process_environment_without_env_file(no_env_file, monkeypatch):
-    monkeypatch.setattr(settings, "tr_excluded_event_types", ["CARD_VERIFICATION"])
+def test_reads_blocklist_from_environment(excluded):
+    excluded(["CARD_VERIFICATION"])
 
     assert get_excluded_event_types() == ["CARD_VERIFICATION"]
-    assert event_types.excluded_event_types_source() == "environment"
 
 
-def test_env_file_takes_precedence_over_process_environment(env_file, monkeypatch):
-    monkeypatch.setattr(settings, "tr_excluded_event_types", ["CARD_VERIFICATION"])
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=SAVEBACK_AGGREGATE\n")
-
-    assert get_excluded_event_types() == ["SAVEBACK_AGGREGATE"]
-    assert event_types.excluded_event_types_source().startswith("env-file:")
-
-
-def test_env_file_is_reread_on_every_call(env_file):
-    """The whole point of the .env mount: editing it must take effect without
-    restarting the container."""
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=CARD_VERIFICATION\n")
-    assert get_excluded_event_types() == ["CARD_VERIFICATION"]
-
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=SAVEBACK_AGGREGATE,CARD_OCT\n")
-    assert get_excluded_event_types() == ["SAVEBACK_AGGREGATE", "CARD_OCT"]
-
-
-def test_removing_the_key_from_env_file_disables_filtering(env_file, monkeypatch):
-    """A missing key in an existing .env means "exclude nothing" - it must not
-    silently fall back to the startup environment, or deleting the line would
-    look like it had no effect."""
-    monkeypatch.setattr(settings, "tr_excluded_event_types", ["CARD_VERIFICATION"])
-    env_file.write_text("ACTUAL_URL=http://example\n")
+def test_empty_configuration_means_no_filtering(excluded):
+    excluded([])
 
     assert get_excluded_event_types() == []
 
 
-def test_empty_value_means_no_filtering(env_file):
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=\n")
+def test_values_are_normalized(excluded):
+    excluded([" card_verification ", "CARD_VERIFICATION"])
 
-    assert get_excluded_event_types() == []
-
-
-def test_env_file_values_are_normalized(env_file):
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=card_verification, SAVEBACK_AGGREGATE\n")
-
-    assert get_excluded_event_types() == ["CARD_VERIFICATION", "SAVEBACK_AGGREGATE"]
+    assert get_excluded_event_types() == ["CARD_VERIFICATION"]
 
 
 # --- filtering in the mapper -------------------------------------------------
 
-def test_excluded_event_type_is_dropped(env_file):
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=CARD_VERIFICATION\n")
+def test_excluded_event_type_is_dropped(excluded):
+    excluded(["CARD_VERIFICATION"])
 
     mapped = map_pytr_to_actual([
         _tx("CARD_TRANSACTION", "keep-1"),
@@ -132,18 +93,18 @@ def test_excluded_event_type_is_dropped(env_file):
     assert [tx["source_id"] for tx in mapped] == ["keep-1"]
 
 
-def test_unknown_event_types_are_always_imported(env_file):
+def test_unknown_event_types_are_always_imported(excluded):
     """Blocklist semantics: a new event type Trade Republic introduces must
     never be silently dropped."""
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=CARD_VERIFICATION\n")
+    excluded(["CARD_VERIFICATION"])
 
     mapped = map_pytr_to_actual([_tx("SOME_BRAND_NEW_TYPE", "keep-1")])
 
     assert [tx["source_id"] for tx in mapped] == ["keep-1"]
 
 
-def test_no_filter_configured_imports_everything(env_file):
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=\n")
+def test_no_filter_configured_imports_everything(excluded):
+    excluded([])
 
     mapped = map_pytr_to_actual([
         _tx("CARD_TRANSACTION", "a"),
@@ -153,14 +114,14 @@ def test_no_filter_configured_imports_everything(env_file):
     assert len(mapped) == 2
 
 
-def test_filter_matching_is_case_insensitive(env_file):
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=card_verification\n")
+def test_filter_matching_is_case_insensitive(excluded):
+    excluded(["card_verification"])
 
     assert map_pytr_to_actual([_tx("CARD_VERIFICATION", "drop-1")]) == []
 
 
-def test_filter_meta_reports_counts(env_file):
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=CARD_VERIFICATION\n")
+def test_filter_meta_reports_counts(excluded):
+    excluded(["CARD_VERIFICATION"])
 
     map_pytr_to_actual([
         _tx("CARD_TRANSACTION", "a"),
@@ -176,8 +137,8 @@ def test_filter_meta_reports_counts(env_file):
     assert meta["seen_event_types"] == ["CARD_TRANSACTION", "CARD_VERIFICATION"]
 
 
-def test_non_executed_status_counted_separately(env_file):
-    env_file.write_text("TR_EXCLUDED_EVENT_TYPES=\n")
+def test_non_executed_status_counted_separately(excluded):
+    excluded([])
     cancelled = _tx("CARD_TRANSACTION", "cancelled")
     cancelled["status"] = "CANCELED"
 

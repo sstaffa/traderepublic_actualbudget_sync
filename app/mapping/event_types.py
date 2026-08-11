@@ -5,25 +5,11 @@ derived from `pytr/event.py` (tr_event_type_mapping) plus event types that have
 been observed in live timelines but are not mapped by pytr.
 
 The blocklist itself is configured exclusively through the environment
-(`TR_EXCLUDED_EVENT_TYPES`). It is re-read from the .env file on every call, so
-changes take effect without restarting the container - see
-`excluded_event_types_source()` for how the value is resolved.
+(`TR_EXCLUDED_EVENT_TYPES`), read once at startup. Changing it requires a
+container restart.
 """
 
-import logging
-import os
-from pathlib import Path
-
 from app.core.config import settings
-
-try:
-    from dotenv import dotenv_values
-except Exception:  # pragma: no cover - dotenv is a hard dependency in practice
-    dotenv_values = None
-
-log = logging.getLogger(__name__)
-
-EXCLUDED_EVENT_TYPES_VAR = "TR_EXCLUDED_EVENT_TYPES"
 
 # Grouped purely for display in the UI; grouping has no effect on filtering.
 EVENT_TYPE_GROUPS: dict[str, list[str]] = {
@@ -117,44 +103,14 @@ def normalize_event_types(values) -> list[str]:
     return result
 
 
-def env_file_path() -> Path:
-    """Path of the .env file that is re-read at runtime.
-
-    Override with TR_ENV_FILE if the file is mounted elsewhere.
-    """
-    return Path(os.getenv("TR_ENV_FILE", "/app/.env"))
-
-
-def excluded_event_types_source() -> str:
-    """Where the current blocklist comes from - shown in the UI so it is
-    obvious whether live reloading is active."""
-    path = env_file_path()
-    if dotenv_values is not None and path.is_file():
-        return f"env-file:{path}"
-    return "environment"
-
-
 def get_excluded_event_types() -> list[str]:
     """Event types that must never be imported into Actual (blocklist).
 
-    Resolution order:
-
-    1. If the .env file exists it is authoritative and re-read on every call,
-       so edits apply without restarting the container. A missing key there
-       means "exclude nothing", rather than silently falling back to the
-       process environment, which would make removing a line look ineffective.
-    2. Otherwise the value captured from the process environment at startup is
-       used (the normal behaviour when only `env_file:` in compose is used).
+    Read from TR_EXCLUDED_EVENT_TYPES, which is captured once when the process
+    starts, so changes to the .env require a container restart.
 
     Unknown or newly introduced event types are always imported: this is a
     blocklist, so a change on Trade Republic's side can never silently drop
     transactions.
     """
-    path = env_file_path()
-    if dotenv_values is not None and path.is_file():
-        try:
-            values = dotenv_values(path)
-            return normalize_event_types(values.get(EXCLUDED_EVENT_TYPES_VAR) or "")
-        except Exception as exc:
-            log.warning("Could not read %s from %s: %s", EXCLUDED_EVENT_TYPES_VAR, path, exc)
     return normalize_event_types(settings.tr_excluded_event_types)
