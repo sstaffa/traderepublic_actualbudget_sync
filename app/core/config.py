@@ -18,6 +18,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.lower() in ("true", "1", "yes", "on")
 
 
+def _parse_csv_list(raw: str) -> list[str]:
+    """Parse a comma-separated env value into an uppercased, de-duplicated list."""
+    result: list[str] = []
+    for part in (raw or "").split(","):
+        value = part.strip().upper()
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
 def _parse_sub_depots(raw: str) -> dict[str, list[str]]:
     """Parse ACTUAL_SUB_DEPOTS as JSON: {"<account name>": ["<ISIN>", ...], ...}.
 
@@ -74,7 +84,19 @@ class Settings:
     include_status_in_notes: bool = _env_bool("INCLUDE_STATUS_IN_NOTES", False)
     include_raw_in_notes: bool = _env_bool("INCLUDE_RAW_IN_NOTES", False)
     run_rules_after_sync: bool = _env_bool("RUN_RULES_AFTER_SYNC", True)
-    run_rules_on_all_transactions: bool = _env_bool("RUN_RULES_ON_ALL_TRANSACTIONS", True)
+    # Off by default: re-running every rule against every existing transaction
+    # on each sync produces avoidable CRDT sync messages and database growth.
+    run_rules_on_all_transactions: bool = _env_bool("RUN_RULES_ON_ALL_TRANSACTIONS", False)
+    # Seed for the UI-editable blocklist. Once the user saves a selection in the
+    # web UI it is persisted in the user-settings file and takes precedence.
+    tr_excluded_event_types: list[str] = field(
+        default_factory=lambda: _parse_csv_list(os.getenv("TR_EXCLUDED_EVENT_TYPES", ""))
+    )
+    # False (default) keeps the previous behaviour: a transaction deleted in
+    # Actual is re-imported on the next sync. True treats soft-deleted
+    # (tombstone=1) rows as "already imported", making manual deletions
+    # permanent and preventing repeated re-insert/re-delete cycles.
+    skip_tombstoned_duplicates: bool = _env_bool("TR_SKIP_TOMBSTONED_DUPLICATES", False)
     actual_sub_depots: dict[str, list[str]] = field(
         default_factory=lambda: _parse_sub_depots(os.getenv("ACTUAL_SUB_DEPOTS", ""))
     )
