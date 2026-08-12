@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 import base64
+import logging
+import os
 import secrets
 
 from fastapi import FastAPI, Request
@@ -10,6 +12,17 @@ from app.api.routes import router as api_router
 from app.core.config import settings
 from app.core.i18n import get_language, reset_language, set_language
 from app.services.scheduler import start_scheduler, stop_scheduler
+
+# Without this, log.info() calls from the app's own modules are dropped: the
+# root logger defaults to WARNING, so only uvicorn and pytr (which configure
+# their own handlers) show up in `docker logs`. That hides scheduler timings,
+# sync results and non-fatal warnings exactly when they are needed for
+# debugging. Override with LOG_LEVEL=DEBUG for more detail.
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 
 @asynccontextmanager
