@@ -18,7 +18,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.lower() in ("true", "1", "yes", "on")
 
 
-def _parse_csv_list(raw: str) -> list[str]:
+def _parse_comma_separated(raw: str) -> list[str]:
     """Parse a comma-separated env value into an uppercased, de-duplicated list."""
     result: list[str] = []
     for part in (raw or "").split(","):
@@ -90,7 +90,7 @@ class Settings:
     # Seed for the UI-editable blocklist. Once the user saves a selection in the
     # web UI it is persisted in the user-settings file and takes precedence.
     tr_excluded_event_types: list[str] = field(
-        default_factory=lambda: _parse_csv_list(os.getenv("TR_EXCLUDED_EVENT_TYPES", ""))
+        default_factory=lambda: _parse_comma_separated(os.getenv("TR_EXCLUDED_EVENT_TYPES", ""))
     )
     # False (default) keeps the previous behaviour: a transaction deleted in
     # Actual is re-imported on the next sync. True treats soft-deleted
@@ -108,6 +108,10 @@ class Settings:
     # actually runs once DEPOT_SYNC_INTERVAL_DAYS have passed since the last run.
     depot_sync_cron: str = os.getenv("DEPOT_SYNC_CRON", "0 18 * * *")
     depot_sync_interval_days: int = int(os.getenv("DEPOT_SYNC_INTERVAL_DAYS", "30"))
+    # Discord notifications. Empty webhook URL disables them entirely.
+    discord_webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
+    notify_on_session_expired: bool = _env_bool("NOTIFY_ON_SESSION_EXPIRED", True)
+    notify_on_sync_failure: bool = _env_bool("NOTIFY_ON_SYNC_FAILURE", True)
 
 
 settings = Settings()

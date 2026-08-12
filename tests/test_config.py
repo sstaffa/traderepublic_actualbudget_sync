@@ -109,7 +109,7 @@ def test_run_rules_on_all_transactions_defaults_off(monkeypatch, reloadable_conf
     assert reloaded.settings.run_rules_on_all_transactions is False
 
 
-def test_excluded_event_types_parsed_from_csv_env(monkeypatch, reloadable_config):
+def test_excluded_event_types_parsed_from_comma_separated_env(monkeypatch, reloadable_config):
     monkeypatch.setenv("TR_EXCLUDED_EVENT_TYPES", "card_verification, SAVEBACK_AGGREGATE ,")
 
     reloaded = importlib.reload(reloadable_config)

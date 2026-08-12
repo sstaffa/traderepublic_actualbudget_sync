@@ -671,14 +671,12 @@
         <div class="panel span-8 stack">
           <div>
             <h2 data-i18n="sync.title">2. Synchronisieren</h2>
-            <p class="muted" data-i18n="sync.body">Erst Daten aus Trade Republic oder CSV importieren und prüfen, danach genau diesen Preview-Stand nach Actual Budget pushen.</p>
+            <p class="muted" data-i18n="sync.body">Erst Daten aus Trade Republic importieren und prüfen, danach genau diesen Preview-Stand nach Actual Budget pushen.</p>
           </div>
           <div class="toolbar">
             <button id="btn-map" class="secondary" data-i18n="sync.trImport">TR-Import</button>
-            <button id="btn-csv-preview" class="secondary" type="button" data-i18n="sync.csvImport">CSV-Import</button>
             <button id="btn-sync" class="primary" disabled data-i18n="sync.push">Zu Actual pushen</button>
           </div>
-          <input id="csv-file" type="file" accept=".csv,text/csv" hidden />
           <div class="field-row">
             <label><span data-i18n="sync.historyFrom">History von</span>
               <input id="history-from" type="date" />
@@ -1172,38 +1170,6 @@
           renderPreview(null)
           return null
         }
-      }
-
-      async function readCsvFile(file) {
-        if (!file) throw new Error(t('csv.select'))
-        return await file.text()
-      }
-
-      async function previewCsv(file) {
-        const csv = await readCsvFile(file)
-        setStatus(t('csv.reading'), t('csv.readingBody'))
-        const data = await requestJson('/tr/csv/preview', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ csv })
-        })
-        lastRawTransactions = data.transactions || []
-        lastMappedTransactions = data.mapped || []
-        updatePushButton()
-        writeJson('raw', lastRawTransactions)
-        writeJson('mapped', lastMappedTransactions)
-        writeJson('import-report', data.preview?.report || [{ action: 'preview_unavailable', error: data.preview_error || t('mapping.previewUnavailable') }])
-        if (data.preview) {
-          renderPreview(data.preview)
-        } else {
-          renderPreview(null)
-        }
-        setStatus(
-          t('csv.prepared'),
-          t('csv.preparedBody', { rows: data.count || 0, mapped: data.mapped_count || 0 }),
-          'success'
-        )
-        return data
       }
 
       async function pushMapped() {
@@ -1746,17 +1712,6 @@
       })
 
       document.getElementById('depot-target-value').addEventListener('input', scheduleDepotPreview)
-
-      document.getElementById('btn-csv-preview').addEventListener('click', async () => {
-        document.getElementById('csv-file').click()
-      })
-
-      document.getElementById('csv-file').addEventListener('change', async (event) => {
-        const file = event.target.files[0]
-        event.target.value = ''
-        if (!file) return
-        try { await previewCsv(file) } catch (error) { setStatus(t('status.csvFailed'), error.message, 'error') }
-      })
 
       document.querySelectorAll('[data-language]').forEach((button) => {
         button.addEventListener('click', () => window.i18n.setLanguage(button.dataset.language))

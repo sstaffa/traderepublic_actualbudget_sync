@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from app.core.config import settings
 from app.mapping.mapper import map_pytr_to_actual
 from app.services.actual import adjust_depot_balance, adjust_sub_depot_balances, push_transactions
+from app.services.notify import notify_sync_failure
 from app.services.state import (
     load_state,
     mark_depot_sync_failure,
@@ -153,6 +154,10 @@ async def _run_sync(fetcher, *, scheduled: bool = False) -> dict:
             return result
         except Exception as exc:
             mark_sync_failure(str(exc), scheduled=scheduled)
+            if scheduled:
+                # Only for unattended runs: a manual sync already surfaces the
+                # error in the UI, so notifying there would just be noise.
+                notify_sync_failure("scheduled transaction sync", exc)
             raise
 
 
@@ -236,6 +241,7 @@ async def run_scheduled_depot_sync(*, force: bool = False) -> dict:
             return result
         except Exception as exc:
             mark_depot_sync_failure(str(exc))
+            notify_sync_failure("depot valuation sync", exc)
             raise
 
 

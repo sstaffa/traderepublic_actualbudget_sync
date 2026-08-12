@@ -176,11 +176,21 @@ def _load_cookies_into_client(api) -> bool:
 def _mark_session_expired(session_id: str | None, message: str = "websession expired") -> None:
     if not session_id:
         return
+    # Only the connected -> expired transition is worth reporting: a failing
+    # resume is often retried several times in a row, and re-notifying on every
+    # attempt would turn one problem into a burst of messages.
+    became_expired = False
     with SESSIONS_LOCK:
         session = SESSIONS.get(session_id)
         if session and session.get("status") == "connected":
             session.update({"status": "expired", "message": message})
+            became_expired = True
     _save_sessions()
+    if became_expired:
+        # Outside the lock: this makes an HTTP call and must not block others.
+        from app.services.notify import notify_session_expired
+
+        notify_session_expired(session_id, message)
 
 
 def _mark_session_connected(session_id: str | None, message: str = "websession valid", api=None) -> None:

@@ -25,9 +25,9 @@ from app.services.actual import adjust_depot_balance as actual_adjust_depot_bala
 from app.services.actual import adjust_sub_depot_balances as actual_adjust_sub_depot_balances
 from app.services.actual import reset_sync_and_compact as actual_reset_sync
 from app.mapping.event_types import EVENT_TYPE_GROUPS, get_excluded_event_types
+from app.services.notify import notifications_enabled, notify
 from app.services.scheduler import run_history_sync, run_scheduled_sync
 from app.services.state import mark_sync_failure, mark_sync_success
-from app.services.trade_republic_csv import parse_trade_republic_csv
 
 router = APIRouter()
 
@@ -307,54 +307,6 @@ async def sync_history(payload: Optional[dict] = None):
     return await run_history_sync(session_id, from_date=from_date, to_date=to_date)
 
 
-@router.post("/tr/csv/preview")
-async def preview_csv_import(payload: dict):
-    csv_text = payload.get("csv") or ""
-    if not csv_text.strip():
-        raise HTTPException(status_code=400, detail=tr("api.csv_required"))
-    txs = parse_trade_republic_csv(csv_text)
-    mapped = map_pytr_to_actual(txs)
-    preview = None
-    preview_error = None
-    try:
-        preview = await asyncio.to_thread(actual_preview_import, mapped)
-    except Exception as e:
-        preview_error = str(e)
-    response = {
-        "source": "csv",
-        "count": len(txs),
-        "mapped_count": len(mapped),
-        "transactions": txs,
-        "mapped": mapped,
-        "preview": preview,
-    }
-    if preview_error:
-        response["preview_error"] = preview_error
-    return response
-
-
-@router.post("/tr/csv/sync")
-async def sync_csv_import(payload: dict):
-    csv_text = payload.get("csv") or ""
-    if not csv_text.strip():
-        raise HTTPException(status_code=400, detail=tr("api.csv_required"))
-    try:
-        txs = parse_trade_republic_csv(csv_text)
-        mapped = map_pytr_to_actual(txs)
-        pushed = await asyncio.to_thread(actual_push, mapped)
-        response = {
-            "source": "csv",
-            "count": len(txs),
-            "mapped_count": len(mapped),
-            "pushed": pushed,
-        }
-        mark_sync_success(response, scheduled=False)
-        return response
-    except Exception as e:
-        mark_sync_failure(str(e), scheduled=False)
-        raise
-
-
 # --- Event-type blocklist (read-only, configured via TR_EXCLUDED_EVENT_TYPES) -
 
 @router.get("/settings/event-filters")
@@ -386,3 +338,19 @@ async def reset_actual_sync():
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/notify/test")
+async def send_test_notification():
+    """Send a test message to the configured Discord webhook, so the setup can
+    be verified without waiting for a real failure."""
+    if not notifications_enabled():
+        raise HTTPException(status_code=501, detail=tr("api.notify_disabled"))
+    delivered = await asyncio.to_thread(
+        notify,
+        "tr-sync test notification",
+        "If you can read this, Discord notifications are configured correctly.",
+    )
+    if not delivered:
+        raise HTTPException(status_code=502, detail=tr("api.notify_failed"))
+    return {"status": "ok", "delivered": True}
