@@ -62,6 +62,10 @@ class Settings:
     tr_phone: str = os.getenv("TR_PHONE_NUMBER", "")
     tr_pin: str = os.getenv("TR_PIN", "")
     tr_cookies_file: str = os.getenv("TR_COOKIES_FILE", "./pytr_cookies.json")
+    # "v2" (default): confirm the login in the Trade Republic app, no WAF
+    # token and no Playwright needed. "v1": legacy flow with a numeric code
+    # from a push notification.
+    tr_login_mode: str = os.getenv("TR_LOGIN_MODE", "v2")
     actual_url: str = os.getenv("ACTUAL_URL", "")
     actual_password: str = os.getenv("ACTUAL_PASSWORD", "")
     actual_encryption_password: str = os.getenv("ACTUAL_ENCRYPTION_PASSWORD", "")
@@ -106,8 +110,26 @@ class Settings:
     # those are covered by the regular SYNC_CRON transaction sync.
     # DEPOT_SYNC_CRON is checked daily at the given time; the adjustment only
     # actually runs once DEPOT_SYNC_INTERVAL_DAYS have passed since the last run.
-    depot_sync_cron: str = os.getenv("DEPOT_SYNC_CRON", "0 18 * * *")
-    depot_sync_interval_days: int = int(os.getenv("DEPOT_SYNC_INTERVAL_DAYS", "30"))
+    # When to open a login window. Trade Republic sessions live ~24h, so this
+    # decides how often syncs can run at all. Several times can be given,
+    # separated by ";" - one cron expression cannot express different times of
+    # day, e.g. "0 18 * * 3; 0 12 * * 6".
+    tr_login_cron: str = os.getenv("TR_LOGIN_CRON", "")
+    # A login window is short (Trade Republic decides, often ~2 min). If nobody
+    # confirms in the app, retry this many times, this many minutes apart.
+    tr_login_retry_minutes: int = int(os.getenv("TR_LOGIN_RETRY_MINUTES", "5"))
+    tr_login_retry_count: int = int(os.getenv("TR_LOGIN_RETRY_COUNT", "1"))
+    # Run the transaction sync right after a scheduled login succeeds, so the
+    # sync never has to be kept in step with the login schedule by hand.
+    tr_sync_after_login: bool = _env_bool("TR_SYNC_AFTER_LOGIN", True)
+    # Own schedule for the depot valuation. Empty by default: the depot sync
+    # normally rides along with a scheduled login, because it needs a session
+    # just like the transaction sync does.
+    depot_sync_cron: str = os.getenv("DEPOT_SYNC_CRON", "")
+    # How often the depot valuation may run. Empty (the default) means monthly:
+    # it runs with the first login of each calendar month. A number instead
+    # gates it on that many days having passed since the last run.
+    depot_sync_interval_days: str = os.getenv("DEPOT_SYNC_INTERVAL_DAYS", "")
     # Discord notifications. Empty webhook URL disables them entirely.
     discord_webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
     notify_on_session_expired: bool = _env_bool("NOTIFY_ON_SESSION_EXPIRED", True)

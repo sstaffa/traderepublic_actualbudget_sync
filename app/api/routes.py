@@ -10,6 +10,7 @@ from app.services.trade_republic import (
     get_last_history_meta,
     start_login as tr_start_login,
     complete_login as tr_complete_login,
+    confirm_login as tr_confirm_login,
     fetch_depot_value as tr_fetch_depot_value,
     get_login_status as tr_get_status,
     resend_login as tr_resend_login,
@@ -128,6 +129,29 @@ async def tr_complete(payload: dict):
         raise HTTPException(status_code=400, detail=tr("api.code_required"))
     try:
         resp = await asyncio.to_thread(tr_complete_login, code, session_id)
+    except TRRateLimitError as e:
+        headers = {"Retry-After": str(e.retry_after)} if e.retry_after else {}
+        raise HTTPException(status_code=429, detail=str(e), headers=headers or None)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return resp
+
+
+@router.post("/tr/confirm")
+async def tr_confirm(payload: dict):
+    """Wait for the login to be confirmed in the Trade Republic app (v2).
+
+    Blocks until confirmed or the login window closes (~120s), so the client
+    should allow for a long-running request rather than a quick round-trip.
+    """
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail=tr("api.session_id_required"))
+    try:
+        resp = await asyncio.to_thread(tr_confirm_login, session_id)
+    except TimeoutError as e:
+        # 408 so the UI can offer a retry instead of showing a hard error.
+        raise HTTPException(status_code=408, detail=str(e))
     except TRRateLimitError as e:
         headers = {"Retry-After": str(e.retry_after)} if e.retry_after else {}
         raise HTTPException(status_code=429, detail=str(e), headers=headers or None)

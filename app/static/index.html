@@ -804,11 +804,17 @@
             </div>
             <button id="btn-close-login" class="dialog-close" type="button" aria-label="Dialog schließen" data-i18n-aria-label="connect.close" title="Dialog schließen" data-i18n-title="connect.close">&times;</button>
           </div>
-          <label><span data-i18n="connect.code">Code / PIN</span>
-            <input id="otp" name="otp" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Code eingeben" data-i18n-placeholder="connect.codePlaceholder" autofocus />
-          </label>
+          <div id="login-code-section">
+            <label><span data-i18n="connect.code">Code / PIN</span>
+              <input id="otp" name="otp" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Code eingeben" data-i18n-placeholder="connect.codePlaceholder" autofocus />
+            </label>
+          </div>
+          <div id="login-confirm-section" hidden>
+            <p class="muted" id="login-confirm-hint" data-i18n="connect.confirmHint">Bitte die Anmeldung jetzt in der Trade-Republic-App auf deinem Handy bestätigen.</p>
+          </div>
           <div class="dialog-actions">
             <button id="btn-complete" class="primary" type="submit" data-i18n="connect.confirm">Code bestätigen</button>
+            <button id="btn-confirm-retry" class="secondary" type="button" hidden data-i18n="connect.retry">Erneut versuchen</button>
           </div>
         </form>
       </dialog>
@@ -833,6 +839,27 @@
 
       function setBusy(isBusy) {
         buttons.forEach((button) => { button.disabled = isBusy || (button.id === 'btn-sync' && !lastMappedTransactions.length) })
+      }
+
+      const codeSection = document.getElementById('login-code-section')
+      const confirmSection = document.getElementById('login-confirm-section')
+      const confirmHint = document.getElementById('login-confirm-hint')
+      const completeButton = document.getElementById('btn-complete')
+      const confirmRetryButton = document.getElementById('btn-confirm-retry')
+
+      // 'code' and 'authenticator' need typed input; 'app_confirmation' waits
+      // for a tap in the Trade Republic app and has nothing to submit.
+      function setLoginDialogMode(method) {
+        const waiting = method === 'app_confirmation'
+        codeSection.hidden = waiting
+        confirmSection.hidden = !waiting
+        completeButton.hidden = waiting
+        confirmRetryButton.hidden = true
+        if (!waiting) {
+          const isAuthenticator = method === 'authenticator'
+          otpInput.placeholder = t(isAuthenticator ? 'connect.authenticatorPlaceholder' : 'connect.codePlaceholder')
+          requestAnimationFrame(() => otpInput.focus())
+        }
       }
 
       function openLoginDialog() {
@@ -1559,10 +1586,57 @@
           setStatus(t('status.loginStarting'), t('status.loginStartingBody'))
           const data = await requestJson('/tr/connect', { method: 'POST' })
           if (data.session_id) setSessionId(data.session_id)
+          setLoginDialogMode(data.login_method || 'code')
           setStatus(t('status.loginStarted'), data.message || JSON.stringify(data), 'success')
-          otpInput.focus()
+          if (data.login_method === 'app_confirmation') {
+            // Nothing to type: start polling right away so the tap on the
+            // phone is all that is left to do.
+            await awaitAppConfirmation()
+          }
         } catch (error) {
           closeLoginDialog()
+          setStatus(t('status.loginFailed'), error.message, 'error')
+        }
+      })
+
+      async function awaitAppConfirmation() {
+        confirmRetryButton.hidden = true
+        confirmHint.textContent = t('connect.confirmHint')
+        setStatus(t('status.awaitingConfirmation'), t('status.awaitingConfirmationBody'))
+        try {
+          // busy:false - this request stays open for up to ~2 minutes while
+          // waiting for the tap, and locking the whole UI that long is worse
+          // than leaving it usable.
+          const data = await requestJson('/tr/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: currentSessionId })
+          }, { busy: false })
+          if (data.session_id) setSessionId(data.session_id)
+          closeLoginDialog()
+          setStatus(t('status.connected'), data.message || t('status.connectedBody'), 'success')
+          try {
+            await loadDepotValueFromTradeRepublic({ silent: false })
+          } catch (error) {
+            setStatus(t('status.connectedNoPortfolio'), error.message, 'error')
+          }
+        } catch (error) {
+          // The login window is short; offer a restart rather than a dead end.
+          confirmHint.textContent = error.message
+          confirmRetryButton.hidden = false
+          setStatus(t('status.confirmationFailed'), error.message, 'error')
+        }
+      }
+
+      confirmRetryButton.addEventListener('click', async () => {
+        // The old login process is gone, so start a fresh one.
+        try {
+          setStatus(t('status.loginStarting'), t('status.loginStartingBody'))
+          const data = await requestJson('/tr/connect', { method: 'POST' })
+          if (data.session_id) setSessionId(data.session_id)
+          setLoginDialogMode(data.login_method || 'code')
+          if (data.login_method === 'app_confirmation') await awaitAppConfirmation()
+        } catch (error) {
           setStatus(t('status.loginFailed'), error.message, 'error')
         }
       })

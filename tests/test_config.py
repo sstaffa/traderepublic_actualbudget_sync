@@ -95,8 +95,10 @@ def test_depot_sync_defaults(monkeypatch, reloadable_config):
 
     reloaded = importlib.reload(reloadable_config)
 
-    assert reloaded.settings.depot_sync_cron == "0 18 * * *"
-    assert reloaded.settings.depot_sync_interval_days == 30
+    # Both empty by default: the depot sync rides along with a scheduled
+    # login, and defaults to once per calendar month.
+    assert reloaded.settings.depot_sync_cron == ""
+    assert reloaded.settings.depot_sync_interval_days == ""
 
 
 def test_run_rules_on_all_transactions_defaults_off(monkeypatch, reloadable_config):

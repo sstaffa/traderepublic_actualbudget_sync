@@ -147,6 +147,16 @@ def _get_api_client(session_id: str):
         return API_CLIENTS.get(session_id)
 
 
+def _use_v2_login() -> bool:
+    """Whether to use Trade Republic's api/v2 web login.
+
+    v2 confirms a login by tapping in the Trade Republic app (or with an
+    authenticator code) instead of typing a code from a push notification, and
+    it needs no AWS WAF token, so no Playwright/Chromium round-trip either.
+    """
+    return (settings.tr_login_mode or "v2").strip().lower() != "v1"
+
+
 def _build_api_client(cookies_file: str):
     from pytr.api import TradeRepublicApi
 
@@ -156,9 +166,10 @@ def _build_api_client(cookies_file: str):
             pin=settings.tr_pin or None,
             save_cookies=True,
             cookies_file=cookies_file,
+            use_v2_login=_use_v2_login(),
         )
     except Exception:
-        return TradeRepublicApi()
+        return TradeRepublicApi(use_v2_login=_use_v2_login())
 
 
 def _load_cookies_into_client(api) -> bool:
@@ -1063,6 +1074,26 @@ def fetch_all_transactions(
         raise NotImplementedError(tr("tr.history_fetch_failed", error=e))
 
 
+LOGIN_METHOD_CODE = "code"
+LOGIN_METHOD_APP_CONFIRMATION = "app_confirmation"
+LOGIN_METHOD_AUTHENTICATOR = "authenticator"
+
+
+def _detect_login_method(api) -> str:
+    """Which second factor this login process expects.
+
+    v1 always sends a numeric code by push/SMS. v2 either wants an
+    authenticator code or a tap in the Trade Republic app; pytr exposes that
+    distinction through weblogin_needs_authenticator, which is only meaningful
+    after initiate_weblogin() has read the login process.
+    """
+    if not _use_v2_login():
+        return LOGIN_METHOD_CODE
+    if getattr(api, "weblogin_needs_authenticator", False):
+        return LOGIN_METHOD_AUTHENTICATOR
+    return LOGIN_METHOD_APP_CONFIRMATION
+
+
 def start_login() -> Dict:
     """Start the Trade Republic authentication flow."""
     _load_sessions()
@@ -1090,7 +1121,13 @@ def start_login() -> Dict:
             # initiate_weblogin is synchronous in pytr. It is already executed in a worker thread
             # from the FastAPI route, so call it directly once.
             countdown = api.initiate_weblogin()
-            log.info("Web login initiated, process_id=%s, countdown=%s", api._process_id, countdown)
+            # How the second factor is delivered decides what the UI must show:
+            # a code input, or a "waiting for your tap" state.
+            login_method = _detect_login_method(api)
+            log.info(
+                "Web login initiated, process_id=%s, countdown=%s, method=%s",
+                api._process_id, countdown, login_method,
+            )
             # Save cookies right away so the fallback path (api lost from memory) can reload them.
             try:
                 api.save_websession()
@@ -1103,6 +1140,7 @@ def start_login() -> Dict:
                     "process_id": getattr(api, "_process_id", None),
                     "phone": _normalize_phone_number(settings.tr_phone) or None,
                     "countdown": countdown,
+                    "login_method": login_method,
                 })
             _save_sessions()
             return {
@@ -1110,6 +1148,7 @@ def start_login() -> Dict:
                 "status": "challenge",
                 "message": tr("tr.login_started"),
                 "countdown_seconds": countdown,
+                "login_method": login_method,
             }
     except Exception as e:
         _raise_if_rate_limited(e)
@@ -1199,6 +1238,75 @@ def complete_login(code: str, session_id: str | None = None) -> Dict:
         raise NotImplementedError(tr("tr.login_complete_failed", error=e))
 
     raise NotImplementedError(tr("tr.login_complete_method_missing"))
+
+
+def confirm_login(session_id: str | None = None) -> Dict:
+    """Wait for the login to be confirmed in the Trade Republic app (v2).
+
+    Unlike complete_login() there is no code to submit: pytr polls the login
+    process until it is confirmed or the window closes (usually ~120s). That
+    poll blocks, so callers must run this in a worker thread.
+    """
+    _load_sessions()
+
+    if settings.app_mode == "mock":
+        sid = session_id or str(uuid.uuid4())
+        if sid not in SESSIONS:
+            _init_session(sid, "connected", tr("tr.mock_connected"))
+        else:
+            with SESSIONS_LOCK:
+                SESSIONS[sid].update({"status": "connected", "message": tr("tr.mock_connected")})
+        _save_sessions()
+        return {"session_id": sid, "status": "connected", "message": tr("tr.mock_connected")}
+
+    if not session_id:
+        raise NotImplementedError(tr("tr.login_session_required"))
+
+    session = SESSIONS.get(session_id)
+    if not session:
+        raise NotImplementedError(tr("tr.session_not_found"))
+
+    api = _get_api_client(session_id)
+    if api is None:
+        # The polling loop needs the very same client: the login process lives
+        # on it, and a rebuilt client would have no process to poll.
+        raise NotImplementedError(tr("tr.login_confirm_client_lost"))
+
+    process_id = session.get("process_id")
+    if not process_id:
+        raise NotImplementedError(tr("tr.invalid_session_process"))
+    setattr(api, "_process_id", process_id)
+
+    try:
+        api.complete_weblogin()
+        try:
+            api.save_websession()
+        except Exception as exc:
+            log.warning("save_websession failed after app confirmation: %s", exc)
+        log.info("Login confirmed in the Trade Republic app for session %s", session_id)
+        with SESSIONS_LOCK:
+            SESSIONS[session_id].update({"status": "connected", "message": tr("tr.weblogin_completed")})
+        _save_sessions()
+        return {
+            "session_id": session_id,
+            "status": "connected",
+            "message": SESSIONS[session_id]["message"],
+        }
+    except TimeoutError as e:
+        # Expected whenever nobody taps in time; keep it distinguishable from
+        # a real failure so the UI can offer a simple retry.
+        log.info("Login not confirmed in time for session %s", session_id)
+        with SESSIONS_LOCK:
+            SESSIONS[session_id].update({"status": "expired", "message": str(e)})
+        _save_sessions()
+        raise TimeoutError(tr("tr.login_confirm_timeout")) from e
+    except Exception as e:
+        _raise_if_rate_limited(e)
+        log.error("App confirmation failed for session %s: %s", session_id, e, exc_info=True)
+        with SESSIONS_LOCK:
+            SESSIONS[session_id].update({"status": "error", "message": str(e)})
+        _save_sessions()
+        raise NotImplementedError(tr("tr.login_complete_failed", error=e))
 
 
 def get_login_status() -> Dict:
