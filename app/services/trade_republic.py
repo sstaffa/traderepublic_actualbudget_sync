@@ -3,6 +3,7 @@ from app.core.config import settings
 from app.core.i18n import tr
 from app.services.state import load_state
 import asyncio
+import hashlib
 import uuid
 import json
 import logging
@@ -87,6 +88,44 @@ def _sessions_dir() -> Path:
     return cookies_path / "sessions"
 
 
+def _device_id_path() -> Path:
+    """Where the persistent device id lives (next to the cookies, so /data)."""
+    cookies_path = Path(settings.tr_cookies_file or "./pytr_cookies.json")
+    base_dir = cookies_path.parent if cookies_path.suffix else cookies_path
+    return base_dir / "tr-sync_device_id"
+
+
+def _stable_device_id() -> str:
+    """A device id that really stays the same for this installation.
+
+    pytr derives its id from uuid.getnode(), the hostname and the platform.
+    Inside a container uuid.getnode() often cannot read a MAC address and
+    returns a fresh random value on every process start, so the id changes on
+    every restart and Trade Republic sees a new device each time. Generating it
+    once and keeping it in the data volume avoids that; the format matches
+    pytr's (a 128 character SHA-512 hex digest) so nothing downstream notices.
+    """
+    path = _device_id_path()
+    try:
+        existing = path.read_text().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+
+    device_id = hashlib.sha512(uuid.uuid4().bytes).hexdigest()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(device_id)
+        path.chmod(0o600)
+        log.info("Created a persistent device id at %s", path)
+    except OSError as exc:
+        # Falling back to a per-start id is worse but still works: it only
+        # means Trade Republic may treat this as a new device again.
+        log.warning("Could not persist the device id at %s: %s", path, exc)
+    return device_id
+
+
 def _sessions_path() -> Path:
     cookies_path = Path(settings.tr_cookies_file or "./pytr_cookies.json")
     if cookies_path.suffix:
@@ -161,7 +200,7 @@ def _build_api_client(cookies_file: str):
     from pytr.api import TradeRepublicApi
 
     try:
-        return TradeRepublicApi(
+        api = TradeRepublicApi(
             phone_no=_normalize_phone_number(settings.tr_phone) or None,
             pin=settings.tr_pin or None,
             save_cookies=True,
@@ -169,7 +208,13 @@ def _build_api_client(cookies_file: str):
             use_v2_login=_use_v2_login(),
         )
     except Exception:
-        return TradeRepublicApi(use_v2_login=_use_v2_login())
+        api = TradeRepublicApi(use_v2_login=_use_v2_login())
+
+    # Replace pytr's derivation, which is not stable inside a container.
+    # Assigned on the instance and before the first login call, because pytr
+    # builds and caches the device header lazily on first use.
+    api._stable_device_id = _stable_device_id
+    return api
 
 
 def _load_cookies_into_client(api) -> bool:
