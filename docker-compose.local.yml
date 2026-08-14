@@ -1,6 +1,7 @@
 services:
   tr-sync:
     container_name: tr-sync
+    hostname: tr-sync
     build:
       context: ./traderepublic_actualbudget_sync
       dockerfile: Dockerfile

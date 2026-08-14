@@ -820,7 +820,7 @@
       </dialog>
     </main>
 
-    <script src="/static/i18n.js?v=20260619-7"></script>
+    <script src="/static/i18n.js?v=20260814-1"></script>
     <script>
       let currentSessionId = localStorage.getItem('tr_session_id') || null
       let lastRawTransactions = []
@@ -841,6 +841,8 @@
         buttons.forEach((button) => { button.disabled = isBusy || (button.id === 'btn-sync' && !lastMappedTransactions.length) })
       }
 
+      let lastLoginMethod = 'code'
+      const dialogBody = document.querySelector('[data-i18n="connect.dialogBody"]')
       const codeSection = document.getElementById('login-code-section')
       const confirmSection = document.getElementById('login-confirm-section')
       const confirmHint = document.getElementById('login-confirm-hint')
@@ -851,12 +853,20 @@
       // for a tap in the Trade Republic app and has nothing to submit.
       function setLoginDialogMode(method) {
         const waiting = method === 'app_confirmation'
+        const isAuthenticator = method === 'authenticator'
         codeSection.hidden = waiting
         confirmSection.hidden = !waiting
         completeButton.hidden = waiting
         confirmRetryButton.hidden = true
+        lastLoginMethod = method
+
+        dialogBody.textContent = t(
+          waiting ? 'connect.dialogBodyConfirmation'
+            : isAuthenticator ? 'connect.dialogBodyAuthenticator'
+            : 'connect.dialogBody'
+        )
+
         if (!waiting) {
-          const isAuthenticator = method === 'authenticator'
           otpInput.placeholder = t(isAuthenticator ? 'connect.authenticatorPlaceholder' : 'connect.codePlaceholder')
           requestAnimationFrame(() => otpInput.focus())
         }
@@ -1796,6 +1806,9 @@
         if (lastPreview) renderPreview(lastPreview)
         if (lastDepotPositionData) renderDepotPositions(lastDepotPositionData)
         renderEventFilters()
+        // applyTranslations() resets the dialog subtitle to the generic text,
+        // so restore the wording for the login method actually in use.
+        if (loginDialog.open) setLoginDialogMode(lastLoginMethod)
       })
 
       window.i18n.applyTranslations()

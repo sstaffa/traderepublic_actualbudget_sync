@@ -1,6 +1,7 @@
 services:
   tr-sync:
     container_name: tr-sync
+    hostname: tr-sync
     # Replace <github-user> and <repo-name> with your GitHub details (must be all lowercase)
     image: ghcr.io/sstaffa/traderepublic_actualbudget_sync:latest
     env_file:
