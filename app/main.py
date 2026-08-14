@@ -27,6 +27,15 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Clear out sessions left behind by earlier login attempts before anything
+    # else runs; a failure here must never prevent startup.
+    try:
+        from app.services.trade_republic import prune_sessions
+
+        prune_sessions()
+    except Exception:
+        logging.getLogger(__name__).warning("Session pruning at startup failed", exc_info=True)
+
     scheduler_task = start_scheduler()
     try:
         yield
