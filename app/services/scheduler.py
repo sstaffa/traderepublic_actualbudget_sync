@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from app.core.config import settings
 from app.mapping.mapper import map_pytr_to_actual
 from app.services.actual import adjust_depot_balance, adjust_sub_depot_balances, push_transactions
+from app.services.backup import create_backup
 from app.services.notify import notify, notify_sync_failure
 from app.services.state import (
     load_state,
@@ -475,6 +476,53 @@ async def login_scheduler_loop(cron_expr: str | None = None) -> None:
             log.exception("Scheduled login failed")
 
 
+# --- Scheduled backups --------------------------------------------------------
+# Independent of the Trade Republic login: a backup only talks to Actual, so it
+# can run on a plain daily schedule instead of waiting for a session.
+
+async def run_scheduled_backup() -> dict:
+    try:
+        result = await asyncio.to_thread(create_backup)
+        log.info("Backup completed: %s", result.get("name"))
+        return result
+    except Exception as exc:
+        log.exception("Scheduled backup failed")
+        notify_sync_failure("scheduled backup", exc)
+        return {"status": "failed", "error": str(exc)}
+
+
+async def backup_scheduler_loop(cron_expr: str | None = None) -> None:
+    cron_expr = settings.backup_cron if cron_expr is None else cron_expr
+    cron_expr = (cron_expr or "").strip()
+    if not cron_expr:
+        log.info("Scheduled backup disabled because BACKUP_CRON is empty")
+        return
+
+    schedules = parse_cron_list(cron_expr)
+    log.info(
+        "Scheduled backup enabled with BACKUP_CRON=%s (keeping %s daily, %s weekly, %s monthly)",
+        cron_expr,
+        settings.backup_keep_daily,
+        settings.backup_keep_weekly,
+        settings.backup_keep_monthly,
+    )
+
+    while True:
+        now = datetime.now()
+        next_run = next_run_of_any(schedules, now)
+        if next_run is None:
+            return
+        delay = max(0.0, (next_run - now).total_seconds())
+        log.info("Next backup at %s", next_run.isoformat(timespec="seconds"))
+        await asyncio.sleep(delay)
+        try:
+            await run_scheduled_backup()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Scheduled backup failed")
+
+
 # --- Lifecycle ----------------------------------------------------------------
 
 def start_scheduler() -> list[asyncio.Task]:
@@ -494,6 +542,11 @@ def start_scheduler() -> list[asyncio.Task]:
         tasks.append(asyncio.create_task(login_scheduler_loop()))
     else:
         log.info("Scheduled login disabled because TR_LOGIN_CRON is empty")
+
+    if (settings.backup_cron or "").strip():
+        tasks.append(asyncio.create_task(backup_scheduler_loop()))
+    else:
+        log.info("Scheduled backup disabled because BACKUP_CRON is empty")
 
     return tasks
 

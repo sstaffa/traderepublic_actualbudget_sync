@@ -110,6 +110,45 @@
         align-items: center;
       }
 
+      .backup-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 280px;
+        overflow-y: auto;
+      }
+
+      .backup-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        justify-content: space-between;
+        font-size: 0.88rem;
+        padding: 3px 0;
+      }
+
+      .backup-row .backup-meta {
+        opacity: 0.6;
+        font-size: 0.8rem;
+        white-space: nowrap;
+      }
+
+      .backup-row a {
+        text-decoration: none;
+        font-weight: 600;
+      }
+
+      .backup-actions {
+        display: flex;
+        gap: 6px;
+        flex: 0 0 auto;
+      }
+
+      .backup-actions button {
+        padding: 2px 8px;
+        font-size: 0.78rem;
+      }
+
       .event-filter-list {
         display: flex;
         flex-direction: column;
@@ -779,6 +818,16 @@
             <h2 data-i18n="filters.title">Event-Typ-Filter</h2>
             <p class="muted" style="margin-bottom: 10px;" data-i18n="filters.body">Ausgeschlossene Event-Typen werden gar nicht erst nach Actual importiert. Konfiguration ausschließlich über TR_EXCLUDED_EVENT_TYPES in der .env. Unbekannte, neue Event-Typen werden immer importiert.</p>
             <div id="event-filter-list" class="event-filter-list"></div>
+          </div>
+          <div class="panel" style="margin-top: 10px;">
+            <h2 data-i18n="backup.title">Backups</h2>
+            <p class="muted" style="margin-bottom: 10px;" data-i18n="backup.body">Sicherungen der Actual-Budget-Datei. Wiederherstellbar in Actual über „Datei importieren“ und dann „Actual“.</p>
+            <p id="backup-retention" class="muted" style="margin-bottom: 12px; font-size: 0.85rem;"></p>
+            <div id="backup-list" class="backup-list"></div>
+            <div class="toolbar" style="margin-top: 12px;">
+              <button id="btn-backup-create" type="button" data-i18n="backup.create">Backup jetzt erstellen</button>
+              <button id="btn-backup-reload" class="secondary" type="button" data-i18n="backup.reload">Neu laden</button>
+            </div>
           </div>
           <div class="panel" style="margin-top: 10px;">
             <h2 data-i18n="maintenance.title">Wartung</h2>
@@ -1782,6 +1831,85 @@
         return data
       }
 
+      function formatBytes(bytes) {
+        const value = Number(bytes || 0)
+        if (value < 1024) return `${value} B`
+        if (value < 1024 * 1024) return `${(value / 1024).toFixed(0)} KB`
+        return `${(value / 1024 / 1024).toFixed(1)} MB`
+      }
+
+      function renderBackups(data) {
+        const container = document.getElementById('backup-list')
+        const retentionLine = document.getElementById('backup-retention')
+        const backups = data.backups || []
+        const retention = data.retention || {}
+
+        retentionLine.textContent = t('backup.retention', {
+          daily: retention.daily ?? 0,
+          weekly: retention.weekly ?? 0,
+          monthly: retention.monthly ?? 0,
+          directory: data.directory || ''
+        })
+
+        if (!backups.length) {
+          container.innerHTML = `<p class="muted">${escapeHtml(t('backup.empty'))}</p>`
+          return
+        }
+
+        container.innerHTML = backups.map((backup) => {
+          const created = String(backup.created_at || '').replace('T', ' ')
+          return `
+            <div class="backup-row">
+              <a href="/backups/${encodeURIComponent(backup.name)}" download>${escapeHtml(created)}</a>
+              <span class="backup-meta">${escapeHtml(formatBytes(backup.size_bytes))}</span>
+              <span class="backup-actions">
+                <button class="secondary" type="button" data-backup-delete="${escapeHtml(backup.name)}">${escapeHtml(t('backup.delete'))}</button>
+              </span>
+            </div>
+          `
+        }).join('')
+      }
+
+      async function loadBackups() {
+        const data = await requestJson('/backups', {}, { busy: false })
+        renderBackups(data)
+        return data
+      }
+
+      async function createBackupNow() {
+        setStatus(t('backup.creating'), t('backup.creatingBody'))
+        const data = await requestJson('/backups', { method: 'POST' })
+        const removed = data.rotation ? (data.rotation.deleted || []).length : 0
+        setStatus(
+          t('backup.created'),
+          t('backup.createdBody', { name: data.name, size: formatBytes(data.size_bytes), removed }),
+          'success'
+        )
+        await loadBackups()
+        return data
+      }
+
+      document.getElementById('btn-backup-create').addEventListener('click', async () => {
+        try { await createBackupNow() } catch (error) { setStatus(t('backup.failed'), error.message, 'error') }
+      })
+
+      document.getElementById('btn-backup-reload').addEventListener('click', async () => {
+        try { await loadBackups() } catch (error) { setStatus(t('backup.loadFailed'), error.message, 'error') }
+      })
+
+      // Delegated: the rows are rebuilt on every render.
+      document.getElementById('backup-list').addEventListener('click', async (event) => {
+        const name = event.target.getAttribute?.('data-backup-delete')
+        if (!name) return
+        if (!confirm(t('backup.deleteConfirm', { name }))) return
+        try {
+          await requestJson(`/backups/${encodeURIComponent(name)}`, { method: 'DELETE' })
+          await loadBackups()
+        } catch (error) {
+          setStatus(t('backup.deleteFailed'), error.message, 'error')
+        }
+      })
+
       async function runActualResetSync() {
         if (!confirm(t('maintenance.resetSyncConfirm'))) return null
         const data = await requestJson('/actual/reset-sync', { method: 'POST' })
@@ -1844,6 +1972,9 @@
       restoreSessionFromServer()
       loadEventFilters().catch(() => {
         // Non-fatal: the panel simply stays empty until the user hits reload.
+      })
+      loadBackups().catch(() => {
+        // Non-fatal: the list stays empty until the user hits reload.
       })
     </script>
   </body>

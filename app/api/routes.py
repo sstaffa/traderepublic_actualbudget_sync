@@ -1,4 +1,7 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
+from app.services import backup as backup_service
+from app.core.config import settings
 import asyncio
 from typing import List
 from app.models.schemas import PytrTransaction, ActualTransaction
@@ -413,5 +416,60 @@ async def trigger_scheduled_login():
         return await run_scheduled_login()
     except NotImplementedError as e:
         raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Backups of the Actual budget --------------------------------------------
+
+@router.get("/backups")
+async def read_backups():
+    """All stored backups, newest first, plus the retention currently in force."""
+    return {
+        "backups": await asyncio.to_thread(backup_service.list_backups),
+        "directory": str(backup_service.backup_dir()),
+        "retention": {
+            "daily": settings.backup_keep_daily,
+            "weekly": settings.backup_keep_weekly,
+            "monthly": settings.backup_keep_monthly,
+        },
+    }
+
+
+@router.post("/backups")
+async def create_backup_now():
+    """Create a backup right away, then apply the retention policy."""
+    try:
+        return await asyncio.to_thread(backup_service.create_backup)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/backups/{name}")
+async def download_backup(name: str):
+    """Download one backup.
+
+    Only names matching the backup pattern are accepted, so a crafted name
+    cannot reach files outside the backup directory.
+    """
+    try:
+        path = await asyncio.to_thread(backup_service.backup_path, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return FileResponse(path, media_type="application/zip", filename=name)
+
+
+@router.delete("/backups/{name}")
+async def remove_backup(name: str):
+    try:
+        return await asyncio.to_thread(backup_service.delete_backup, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

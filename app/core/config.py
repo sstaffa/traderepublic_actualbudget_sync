@@ -130,6 +130,16 @@ class Settings:
     # Own schedule for the depot valuation. Empty by default: the depot sync
     # normally rides along with a scheduled login, because it needs a session
     # just like the transaction sync does.
+    # Backups of the Actual budget. These need no Trade Republic session, only
+    # the Actual server, so they run on their own daily schedule.
+    backup_cron: str = os.getenv("BACKUP_CRON", "0 3 * * *")
+    # Defaults to a "backups" folder next to the pytr cookies, i.e. in /data.
+    backup_dir: str = os.getenv("BACKUP_DIR", "")
+    # Grandfather-father-son retention: every backup of the last N days, then
+    # one per week, then one per month.
+    backup_keep_daily: int = int(os.getenv("BACKUP_KEEP_DAILY", "7"))
+    backup_keep_weekly: int = int(os.getenv("BACKUP_KEEP_WEEKLY", "3"))
+    backup_keep_monthly: int = int(os.getenv("BACKUP_KEEP_MONTHLY", "12"))
     depot_sync_cron: str = os.getenv("DEPOT_SYNC_CRON", "")
     # How often the depot valuation may run. Empty (the default) means monthly:
     # it runs with the first login of each calendar month. A number instead
