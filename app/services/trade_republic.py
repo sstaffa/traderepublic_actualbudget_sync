@@ -166,6 +166,100 @@ def _cookies_file_for_session(session_id: str) -> str:
     return str(sessions_dir / f'{session_id}.cookies.json')
 
 
+SESSION_COOKIE_SUFFIX = ".cookies.json"
+# Only files this module created are ever removed; the same directory rule as
+# the backup rotation, so nothing unrelated can be caught by a stale name.
+SESSION_COOKIE_PATTERN = re.compile(
+    r"^[0-9a-fA-F-]{36}" + re.escape(SESSION_COOKIE_SUFFIX) + r"$"
+)
+
+
+def prune_sessions(retention_days: int | None = None, dry_run: bool = False) -> Dict:
+    """Remove old login sessions and their cookie files.
+
+    Every login attempt creates a session id with its own cookie file,
+    including attempts that were never completed. Nothing removed them, so the
+    directory grew with every click on "start login" and kept expired
+    credentials around indefinitely.
+
+    The connected session is always kept, however old it is: Trade Republic
+    sessions can outlive the retention window, and dropping the one in use
+    would force an unnecessary login.
+    """
+    retention_days = (
+        settings.tr_session_retention_days if retention_days is None else retention_days
+    )
+    if retention_days < 0:
+        return {"removed_sessions": [], "removed_files": [], "dry_run": dry_run}
+
+    _load_sessions()
+    connected_sid, _cookies = _find_connected_session()
+    cutoff = time.time() - retention_days * 86400
+
+    removed_sessions: list[str] = []
+    removed_files: list[str] = []
+
+    sessions_dir = _sessions_dir()
+    keep_names = {f"{connected_sid}{SESSION_COOKIE_SUFFIX}"} if connected_sid else set()
+
+    if sessions_dir.is_dir():
+        for path in sessions_dir.iterdir():
+            if not SESSION_COOKIE_PATTERN.match(path.name):
+                continue
+            if path.name in keep_names:
+                continue
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    continue
+            except OSError:
+                continue
+            if not dry_run:
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    log.warning("Could not delete old session file %s: %s", path, exc)
+                    continue
+            removed_files.append(path.name)
+
+    stale_ids = {name[: -len(SESSION_COOKIE_SUFFIX)] for name in removed_files}
+    with SESSIONS_LOCK:
+        for session_id in list(SESSIONS):
+            if session_id == connected_sid:
+                continue
+            cookies_file = SESSIONS[session_id].get("cookies_file") or ""
+            # Drop entries whose file is gone, either just now or earlier.
+            if session_id in stale_ids or (cookies_file and not Path(cookies_file).exists()):
+                if not dry_run:
+                    SESSIONS.pop(session_id, None)
+                    API_CLIENTS.pop(session_id, None)
+                removed_sessions.append(session_id)
+
+    if removed_sessions and not dry_run:
+        _save_sessions()
+
+    if removed_files or removed_sessions:
+        log.info(
+            "Pruned %s session file(s) and %s session entr(y/ies) older than %s day(s)",
+            len(removed_files), len(removed_sessions), retention_days,
+        )
+
+    return {
+        "removed_sessions": removed_sessions,
+        "removed_files": removed_files,
+        "kept_session": connected_sid,
+        "retention_days": retention_days,
+        "dry_run": dry_run,
+    }
+
+
+def _prune_sessions_quietly() -> None:
+    """Prune after a login; never let cleanup break an otherwise good login."""
+    try:
+        prune_sessions()
+    except Exception as exc:
+        log.warning("Session pruning failed: %s", exc)
+
+
 def _init_session(session_id: str, status: str, message: str) -> Dict:
     data = {
         'status': status,
@@ -1269,6 +1363,7 @@ def complete_login(code: str, session_id: str | None = None) -> Dict:
             except Exception as exc:
                 log.warning("save_websession failed after complete_weblogin: %s", exc)
             log.info("complete_weblogin succeeded for session %s", session_id)
+            _prune_sessions_quietly()
             with SESSIONS_LOCK:
                 SESSIONS[session_id].update({"status": "connected", "message": tr("tr.weblogin_completed")})
             _save_sessions()
@@ -1332,6 +1427,7 @@ def confirm_login(session_id: str | None = None) -> Dict:
         except Exception as exc:
             log.warning("save_websession failed after app confirmation: %s", exc)
         log.info("Login confirmed in the Trade Republic app for session %s", session_id)
+        _prune_sessions_quietly()
         with SESSIONS_LOCK:
             SESSIONS[session_id].update({"status": "connected", "message": tr("tr.weblogin_completed")})
         _save_sessions()

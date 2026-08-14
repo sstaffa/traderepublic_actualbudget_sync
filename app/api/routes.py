@@ -16,6 +16,7 @@ from app.services.trade_republic import (
     complete_login as tr_complete_login,
     complete_login_with_totp as tr_complete_login_with_totp,
     confirm_login as tr_confirm_login,
+    prune_sessions as tr_prune_sessions,
     fetch_depot_value as tr_fetch_depot_value,
     get_login_status as tr_get_status,
     resend_login as tr_resend_login,
@@ -471,5 +472,20 @@ async def remove_backup(name: str):
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tr/prune-sessions")
+async def prune_tr_sessions(payload: Optional[dict] = None):
+    """Remove old login sessions and their cookie files.
+
+    Runs automatically at startup and after every successful login; this is for
+    clearing out a backlog on demand. Pass {"dry_run": true} to preview.
+    """
+    payload = payload or {}
+    dry_run = bool(payload.get("dry_run", False))
+    try:
+        return await asyncio.to_thread(tr_prune_sessions, None, dry_run)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

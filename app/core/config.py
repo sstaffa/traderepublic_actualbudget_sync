@@ -62,6 +62,10 @@ class Settings:
     tr_phone: str = os.getenv("TR_PHONE_NUMBER", "")
     tr_pin: str = os.getenv("TR_PIN", "")
     tr_cookies_file: str = os.getenv("TR_COOKIES_FILE", "./pytr_cookies.json")
+    # Every login attempt leaves a session with its own cookie file behind.
+    # Sessions older than this and not currently connected are removed, so
+    # expired credentials do not accumulate. Negative disables pruning.
+    tr_session_retention_days: int = int(os.getenv("TR_SESSION_RETENTION_DAYS", "2"))
     # "v2" (default): confirm the login in the Trade Republic app, no WAF
     # token and no Playwright needed. "v1": legacy flow with a numeric code
     # from a push notification.
