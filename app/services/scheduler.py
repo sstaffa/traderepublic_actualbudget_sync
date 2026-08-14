@@ -528,17 +528,32 @@ async def backup_scheduler_loop(cron_expr: str | None = None) -> None:
 def start_scheduler() -> list[asyncio.Task]:
     tasks: list[asyncio.Task] = []
 
+    # An empty SYNC_CRON / DEPOT_SYNC_CRON does not mean "off": both normally
+    # run attached to a scheduled login, because they need a Trade Republic
+    # session and a schedule of their own would only fire while it is expired.
+    login_scheduled = bool((settings.tr_login_cron or "").strip())
+    runs_after_login = login_scheduled and settings.tr_sync_after_login
+
     if (settings.sync_cron or "").strip():
         tasks.append(asyncio.create_task(scheduler_loop()))
+    elif runs_after_login:
+        log.info("Transaction sync runs after each scheduled login (SYNC_CRON is empty)")
     else:
-        log.info("Scheduled sync disabled because SYNC_CRON is empty")
+        log.info("Transaction sync will not run automatically: SYNC_CRON is empty and it is not attached to a login")
 
     if (settings.depot_sync_cron or "").strip():
         tasks.append(asyncio.create_task(depot_scheduler_loop()))
+    elif runs_after_login:
+        interval_days = _depot_sync_interval_days()
+        log.info(
+            "Depot valuation runs after a scheduled login, %s (DEPOT_SYNC_CRON is empty)",
+            f"at most every {interval_days} day(s)" if interval_days is not None
+            else "at most once per calendar month",
+        )
     else:
-        log.info("Scheduled depot sync disabled because DEPOT_SYNC_CRON is empty")
+        log.info("Depot valuation will not run automatically: DEPOT_SYNC_CRON is empty and it is not attached to a login")
 
-    if (settings.tr_login_cron or "").strip():
+    if login_scheduled:
         tasks.append(asyncio.create_task(login_scheduler_loop()))
     else:
         log.info("Scheduled login disabled because TR_LOGIN_CRON is empty")
