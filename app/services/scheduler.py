@@ -17,7 +17,9 @@ from app.services.state import (
 )
 from app.services.trade_republic import (
     LOGIN_METHOD_APP_CONFIRMATION,
+    LOGIN_METHOD_AUTHENTICATOR,
     TRRateLimitError,
+    complete_login_with_totp,
     confirm_login,
     fetch_all_transactions,
     fetch_depot_value,
@@ -25,6 +27,7 @@ from app.services.trade_republic import (
     get_last_history_meta,
     get_login_status,
     start_login,
+    totp_available,
 )
 
 log = logging.getLogger(__name__)
@@ -356,8 +359,18 @@ async def _attempt_login() -> dict:
         # Mock mode completes immediately.
         return {"status": "connected", "session_id": session_id}
 
+    if method == LOGIN_METHOD_AUTHENTICATOR:
+        if not totp_available():
+            raise NotImplementedError(
+                "This login expects an authenticator code, which the scheduler cannot type. "
+                "Set TR_TOTP_SECRET to generate codes locally, or switch the Trade Republic "
+                "app back to confirming logins in the app."
+            )
+        log.info("Answering the authenticator challenge with a generated code")
+        return await asyncio.to_thread(complete_login_with_totp, session_id)
+
     if method != LOGIN_METHOD_APP_CONFIRMATION:
-        # A code cannot be typed by the scheduler.
+        # A code from a push notification cannot be typed by the scheduler.
         raise NotImplementedError(
             f"Scheduled login needs app confirmation, but this login expects '{method}'. "
             "Set TR_LOGIN_MODE=v2 and use app confirmation, or log in manually."

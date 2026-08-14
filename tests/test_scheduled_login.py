@@ -262,3 +262,41 @@ def test_failing_depot_valuation_does_not_fail_the_login(monkeypatch, login_env)
 
     assert result["status"] == "connected"
     assert result["depot_sync"]["status"] == "failed"
+
+
+def test_authenticator_login_uses_a_generated_code(monkeypatch, login_env):
+    """With TR_TOTP_SECRET configured, the scheduler can answer an
+    authenticator challenge on its own - the only fully unattended path."""
+    from app.services.trade_republic import LOGIN_METHOD_AUTHENTICATOR
+
+    _valid_session(monkeypatch, False)
+    monkeypatch.setattr(
+        scheduler, "start_login",
+        lambda: {"session_id": "s1", "status": "challenge", "login_method": LOGIN_METHOD_AUTHENTICATOR},
+    )
+    monkeypatch.setattr(scheduler, "totp_available", lambda: True)
+    monkeypatch.setattr(
+        scheduler, "complete_login_with_totp",
+        lambda sid: {"status": "connected", "session_id": sid},
+    )
+
+    result = run(run_scheduled_login())
+
+    assert result["status"] == "connected"
+    assert login_env["synced"] == [True]
+
+
+def test_authenticator_login_without_a_secret_fails_clearly(monkeypatch, login_env):
+    from app.services.trade_republic import LOGIN_METHOD_AUTHENTICATOR
+
+    _valid_session(monkeypatch, False)
+    monkeypatch.setattr(
+        scheduler, "start_login",
+        lambda: {"session_id": "s1", "status": "challenge", "login_method": LOGIN_METHOD_AUTHENTICATOR},
+    )
+    monkeypatch.setattr(scheduler, "totp_available", lambda: False)
+
+    result = run(run_scheduled_login())
+
+    assert result["status"] == "failed"
+    assert login_env["synced"] == []

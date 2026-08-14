@@ -221,3 +221,88 @@ def test_unwritable_directory_still_yields_an_id(monkeypatch, tmp_path):
     monkeypatch.setattr(trade_republic.Path, "write_text", _fail)
 
     assert len(trade_republic._stable_device_id()) == 128
+
+
+# --- locally generated authenticator codes -----------------------------------
+
+def test_totp_unavailable_without_a_secret(monkeypatch):
+    monkeypatch.setattr(settings, "tr_totp_secret", "")
+
+    assert trade_republic.totp_available() is False
+    with pytest.raises(NotImplementedError):
+        trade_republic.generate_totp_code()
+
+
+def test_generated_code_has_six_digits(monkeypatch):
+    monkeypatch.setattr(settings, "tr_totp_secret", "JBSWY3DPEHPK3PXP")
+
+    code = trade_republic.generate_totp_code()
+
+    assert trade_republic.totp_available() is True
+    assert len(code) == 6 and code.isdigit()
+
+
+def test_generated_code_matches_a_reference_implementation(monkeypatch):
+    """Guards against silently producing codes Trade Republic would reject."""
+    import pyotp
+
+    secret = "JBSWY3DPEHPK3PXP"
+    monkeypatch.setattr(settings, "tr_totp_secret", secret)
+
+    assert trade_republic.generate_totp_code() == pyotp.TOTP(secret).now()
+
+
+def test_secret_is_accepted_with_spaces_and_lowercase(monkeypatch):
+    """Authenticator setup screens usually show the secret in groups of four."""
+    import pyotp
+
+    monkeypatch.setattr(settings, "tr_totp_secret", "jbsw y3dp ehpk 3pxp")
+
+    assert trade_republic.generate_totp_code() == pyotp.TOTP("JBSWY3DPEHPK3PXP").now()
+
+
+def test_invalid_secret_is_reported_clearly(monkeypatch):
+    monkeypatch.setattr(settings, "tr_totp_secret", "not-base32!")
+
+    with pytest.raises(NotImplementedError):
+        trade_republic.generate_totp_code()
+
+
+def test_reused_code_is_retried_in_the_next_window(monkeypatch):
+    """Two attempts inside the same 30 second window reuse a code, which Trade
+    Republic rejects; waiting for the next window fixes it."""
+    monkeypatch.setattr(settings, "tr_totp_secret", "JBSWY3DPEHPK3PXP")
+    slept = []
+    monkeypatch.setattr(trade_republic.time, "sleep", lambda seconds: slept.append(seconds))
+
+    calls = []
+
+    def _first_call_rejected(code, session_id):
+        calls.append(code)
+        if len(calls) == 1:
+            raise NotImplementedError("That authenticator code was already used.")
+        return {"status": "connected", "session_id": session_id}
+
+    monkeypatch.setattr(trade_republic, "complete_login", _first_call_rejected)
+
+    result = trade_republic.complete_login_with_totp("s1")
+
+    assert result["status"] == "connected"
+    assert len(calls) == 2
+    assert slept and 0 < slept[0] <= 31
+
+
+def test_other_errors_are_not_retried(monkeypatch):
+    monkeypatch.setattr(settings, "tr_totp_secret", "JBSWY3DPEHPK3PXP")
+    calls = []
+
+    def _rejected(code, session_id):
+        calls.append(code)
+        raise NotImplementedError("That authenticator code is not correct.")
+
+    monkeypatch.setattr(trade_republic, "complete_login", _rejected)
+
+    with pytest.raises(NotImplementedError):
+        trade_republic.complete_login_with_totp("s1")
+
+    assert len(calls) == 1

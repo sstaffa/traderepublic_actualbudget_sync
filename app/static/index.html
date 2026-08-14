@@ -1602,12 +1602,39 @@
             // Nothing to type: start polling right away so the tap on the
             // phone is all that is left to do.
             await awaitAppConfirmation()
+          } else if (data.login_method === 'authenticator' && data.totp_available) {
+            // A secret is configured, so the code can be generated here
+            // instead of being copied from the authenticator app.
+            await submitGeneratedTotp()
           }
         } catch (error) {
           closeLoginDialog()
           setStatus(t('status.loginFailed'), error.message, 'error')
         }
       })
+
+      async function submitGeneratedTotp() {
+        setStatus(t('status.generatingCode'), t('status.generatingCodeBody'))
+        try {
+          const data = await requestJson('/tr/totp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: currentSessionId })
+          })
+          if (data.session_id) setSessionId(data.session_id)
+          closeLoginDialog()
+          setStatus(t('status.connected'), data.message || t('status.connectedBody'), 'success')
+          try {
+            await loadDepotValueFromTradeRepublic({ silent: false })
+          } catch (error) {
+            setStatus(t('status.connectedNoPortfolio'), error.message, 'error')
+          }
+        } catch (error) {
+          // Fall back to typing the code by hand.
+          setStatus(t('status.codeFailed'), error.message, 'error')
+          requestAnimationFrame(() => otpInput.focus())
+        }
+      }
 
       async function awaitAppConfirmation() {
         confirmRetryButton.hidden = true

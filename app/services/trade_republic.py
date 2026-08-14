@@ -10,6 +10,7 @@ import logging
 import re
 from pathlib import Path
 import threading
+import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -1194,6 +1195,8 @@ def start_login() -> Dict:
                 "message": tr("tr.login_started"),
                 "countdown_seconds": countdown,
                 "login_method": login_method,
+                # Lets the UI skip the code prompt when it can generate one.
+                "totp_available": totp_available(),
             }
     except Exception as e:
         _raise_if_rate_limited(e)
@@ -1352,6 +1355,50 @@ def confirm_login(session_id: str | None = None) -> Dict:
             SESSIONS[session_id].update({"status": "error", "message": str(e)})
         _save_sessions()
         raise NotImplementedError(tr("tr.login_complete_failed", error=e))
+
+
+def totp_available() -> bool:
+    """Whether authenticator codes can be generated locally."""
+    return bool((settings.tr_totp_secret or "").strip())
+
+
+def generate_totp_code() -> str:
+    """Current authenticator code from TR_TOTP_SECRET."""
+    secret = (settings.tr_totp_secret or "").strip().replace(" ", "").upper()
+    if not secret:
+        raise NotImplementedError(tr("tr.totp_secret_missing"))
+    try:
+        import pyotp
+    except ImportError as exc:
+        raise NotImplementedError(tr("tr.totp_package_missing", error=exc)) from exc
+    try:
+        return pyotp.TOTP(secret).now()
+    except Exception as exc:
+        raise NotImplementedError(tr("tr.totp_secret_invalid", error=exc)) from exc
+
+
+def _seconds_until_next_totp_window() -> float:
+    """How long until the current 30 second code window rolls over."""
+    return 30 - (time.time() % 30)
+
+
+def complete_login_with_totp(session_id: str) -> Dict:
+    """Complete an authenticator login using a locally generated code.
+
+    Trade Republic rejects a code that was already used, which happens when two
+    attempts fall into the same 30 second window. In that case this waits for
+    the next window once and retries with a fresh code, rather than reporting a
+    failure that a few seconds of patience would have avoided.
+    """
+    try:
+        return complete_login(generate_totp_code(), session_id)
+    except Exception as exc:
+        if "already used" not in str(exc).lower():
+            raise
+        wait = _seconds_until_next_totp_window() + 1
+        log.info("Authenticator code was already used, retrying in %.0fs", wait)
+        time.sleep(wait)
+        return complete_login(generate_totp_code(), session_id)
 
 
 def get_login_status() -> Dict:

@@ -66,6 +66,11 @@ class Settings:
     # token and no Playwright needed. "v1": legacy flow with a numeric code
     # from a push notification.
     tr_login_mode: str = os.getenv("TR_LOGIN_MODE", "v2")
+    # Base32 secret of the Trade Republic authenticator entry. When set, codes
+    # are generated locally, which is the only way to log in fully unattended.
+    # Note that this puts both factors in one place: anyone who can read this
+    # file has everything needed to sign in.
+    tr_totp_secret: str = os.getenv("TR_TOTP_SECRET", "")
     actual_url: str = os.getenv("ACTUAL_URL", "")
     actual_password: str = os.getenv("ACTUAL_PASSWORD", "")
     actual_encryption_password: str = os.getenv("ACTUAL_ENCRYPTION_PASSWORD", "")

@@ -7,3 +7,4 @@ httpx2>=2.9.1
 pytr[playwright]>=0.4.10
 actualpy>=0.22.3
 aiofiles>=25.1.0
+pyotp>=2.10.0

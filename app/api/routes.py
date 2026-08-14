@@ -5,11 +5,13 @@ from app.models.schemas import PytrTransaction, ActualTransaction
 from app.core.i18n import tr
 from app.mapping.mapper import map_pytr_to_actual
 from app.services.trade_republic import fetch_transactions as tr_fetch
+from app.services.trade_republic import totp_available
 from app.services.trade_republic import (
     fetch_all_transactions as tr_fetch_history,
     get_last_history_meta,
     start_login as tr_start_login,
     complete_login as tr_complete_login,
+    complete_login_with_totp as tr_complete_login_with_totp,
     confirm_login as tr_confirm_login,
     fetch_depot_value as tr_fetch_depot_value,
     get_login_status as tr_get_status,
@@ -27,7 +29,7 @@ from app.services.actual import adjust_sub_depot_balances as actual_adjust_sub_d
 from app.services.actual import reset_sync_and_compact as actual_reset_sync
 from app.mapping.event_types import EVENT_TYPE_GROUPS, get_excluded_event_types
 from app.services.notify import notifications_enabled, notify
-from app.services.scheduler import run_history_sync, run_scheduled_sync
+from app.services.scheduler import run_history_sync, run_scheduled_login, run_scheduled_sync
 from app.services.state import mark_sync_failure, mark_sync_success
 
 router = APIRouter()
@@ -152,6 +154,28 @@ async def tr_confirm(payload: dict):
     except TimeoutError as e:
         # 408 so the UI can offer a retry instead of showing a hard error.
         raise HTTPException(status_code=408, detail=str(e))
+    except TRRateLimitError as e:
+        headers = {"Retry-After": str(e.retry_after)} if e.retry_after else {}
+        raise HTTPException(status_code=429, detail=str(e), headers=headers or None)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return resp
+
+
+@router.post("/tr/totp")
+async def tr_totp(payload: dict):
+    """Answer an authenticator challenge with a locally generated code.
+
+    Only works when TR_TOTP_SECRET is configured; without it, the code has to
+    come from the authenticator app on the phone.
+    """
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail=tr("api.session_id_required"))
+    if not totp_available():
+        raise HTTPException(status_code=501, detail=tr("tr.totp_secret_missing"))
+    try:
+        resp = await asyncio.to_thread(tr_complete_login_with_totp, session_id)
     except TRRateLimitError as e:
         headers = {"Retry-After": str(e.retry_after)} if e.retry_after else {}
         raise HTTPException(status_code=429, detail=str(e), headers=headers or None)
@@ -378,3 +402,16 @@ async def send_test_notification():
     if not delivered:
         raise HTTPException(status_code=502, detail=tr("api.notify_failed"))
     return {"status": "ok", "delivered": True}
+
+
+@router.post("/tr/scheduled-login")
+async def trigger_scheduled_login():
+    """Run the scheduled login now: open a login window, wait for the tap in
+    the Trade Republic app, then sync. Useful for testing the schedule without
+    waiting for it, and to catch up after a missed window."""
+    try:
+        return await run_scheduled_login()
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
