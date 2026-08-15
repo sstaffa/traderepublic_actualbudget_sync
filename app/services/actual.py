@@ -1,6 +1,5 @@
 import datetime
 import logging
-import re
 from decimal import Decimal
 from typing import List, Dict, Any
 
@@ -9,15 +8,8 @@ from app.core.i18n import tr
 
 log = logging.getLogger(__name__)
 
-DEPOT_VALUATION_PAYEE = "Depotwert-Anpassung seit letzter Bewertung"
+DEPOT_VALUATION_PAYEE = "TR Depotwert-Anpassung seit letzter Bewertung"
 DEPOT_VALUATION_IMPORT_PREFIX = "tr-depot-valuation-adjustment:"
-TR_TIMESTAMP_PATTERN = re.compile(
-    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})"
-)
-TR_ISIN_PATTERN = re.compile(r"\b[A-Z]{2}[A-Z0-9]{9}[0-9]\b")
-TR_CSV_FEE_PATTERN = re.compile(r'"fee"\s*:\s*"(-?\d+(?:\.\d+)?)"')
-DATE_AMOUNT_EVENT_DUPLICATES = {"INTEREST_PAYOUT"}
-SECURITY_CASH_EVENT_DUPLICATES = {"SSP_CORPORATE_ACTION_CASH"}
 
 
 def _is_truthy(value: Any) -> bool:
@@ -45,76 +37,6 @@ def _find_transaction_by_financial_id(session, imported_id: str | None):
     return session.exec(query).first()
 
 
-def _extract_tr_timestamps(notes: str | None) -> list[datetime.datetime]:
-    timestamps = []
-    for value in TR_TIMESTAMP_PATTERN.findall(notes or ""):
-        try:
-            timestamps.append(datetime.datetime.fromisoformat(value.replace("Z", "+00:00")))
-        except ValueError:
-            continue
-    return timestamps
-
-
-def _find_cross_source_import_duplicate(
-    session,
-    account,
-    date: datetime.date,
-    amount_eur: float,
-    notes: str | None,
-    event_type: str | None = None,
-):
-    """Match an imported TR row whose CSV/API source IDs differ.
-
-    A linked transfer with the same account, date, and amount is also treated as
-    the same import. This covers older matches whose source timestamp changed
-    between the CSV and API representations.
-    """
-    if account is None:
-        return None
-    try:
-        from actual.database import Transactions
-        from actual.utils.conversions import date_to_int, decimal_to_cents
-        from sqlmodel import select
-    except ImportError:
-        return None
-
-    incoming_timestamps = _extract_tr_timestamps(notes)
-    incoming_isins = set(TR_ISIN_PATTERN.findall(notes or ""))
-    match_days = max(0, settings.transfer_match_days)
-    start = date_to_int(date - datetime.timedelta(days=match_days))
-    end = date_to_int(date + datetime.timedelta(days=match_days))
-    candidates = session.exec(
-        select(Transactions)
-        .where(Transactions.acct == account.id)
-        .where(Transactions.date >= start)
-        .where(Transactions.date <= end)
-        .where(Transactions.amount == decimal_to_cents(Decimal(str(amount_eur))))
-        .where(Transactions.financial_id.is_not(None))
-        .where(Transactions.tombstone == 0)
-        .where(Transactions.is_parent == 0)
-    ).all()
-    for candidate in candidates:
-        existing_timestamps = _extract_tr_timestamps(candidate.notes)
-        timestamps_match = any(
-            abs((incoming - existing).total_seconds()) <= 5
-            for incoming in incoming_timestamps
-            for existing in existing_timestamps
-        )
-        if timestamps_match:
-            return candidate
-        if (
-            event_type in DATE_AMOUNT_EVENT_DUPLICATES
-            and candidate.date == date_to_int(date)
-            and f"eventType: {event_type}" in (candidate.notes or "")
-        ):
-            return candidate
-        if (
-            event_type in SECURITY_CASH_EVENT_DUPLICATES
-            and candidate.date == date_to_int(date)
-            and incoming_isins.intersection(TR_ISIN_PATTERN.findall(candidate.notes or ""))
-        ):
-            return candidate
-    return None
 
 
 def _find_existing_linked_transfer_duplicate(
@@ -166,58 +88,6 @@ def _find_existing_linked_transfer_duplicate(
             return linked
     return None
 
-
-def _find_trade_import_duplicate(
-    session,
-    account,
-    date: datetime.date,
-    amount_eur: float,
-    notes: str | None,
-):
-    """Match an API trade to one or more CSV executions by date and ISIN."""
-    if account is None:
-        return None
-    incoming_isins = set(TR_ISIN_PATTERN.findall(notes or ""))
-    if not incoming_isins:
-        return None
-    try:
-        from actual.database import Transactions
-        from actual.utils.conversions import date_to_int, decimal_to_cents
-        from sqlmodel import select
-    except ImportError:
-        return None
-
-    candidates = session.exec(
-        select(Transactions)
-        .where(Transactions.acct == account.id)
-        .where(Transactions.date == date_to_int(date))
-        .where(Transactions.financial_id.is_not(None))
-        .where(Transactions.tombstone == 0)
-        .where(Transactions.is_parent == 0)
-    ).all()
-    matching_candidates = []
-    for candidate in candidates:
-        candidate_notes = candidate.notes or ""
-        if (
-            "eventType: TRADING_TRADE_EXECUTED" in candidate_notes
-            and incoming_isins.intersection(TR_ISIN_PATTERN.findall(candidate_notes))
-        ):
-            matching_candidates.append(candidate)
-    if not matching_candidates:
-        return None
-
-    target_amount = decimal_to_cents(Decimal(str(amount_eur)))
-    executions_total = sum(candidate.amount or 0 for candidate in matching_candidates)
-    fee_total = sum(
-        decimal_to_cents(Decimal(fee))
-        for candidate in matching_candidates
-        for fee in TR_CSV_FEE_PATTERN.findall(candidate.notes or "")
-    )
-    tolerance = max(0, settings.transfer_match_tolerance_cents)
-    totals = {executions_total, executions_total + fee_total}
-    if any(abs(total - target_amount) <= tolerance for total in totals):
-        return matching_candidates[0]
-    return None
 
 
 def _find_matching_transfer_counterpart(session, account, date: datetime.date, amount_eur: float):
@@ -534,15 +404,6 @@ def preview_import(transactions: List[Dict]) -> Dict[str, Any]:
             date = datetime.date.fromisoformat(tx["date"]) if tx.get("date") else None
             amount_eur = (tx.get("amount") or 0) / 100
             duplicate_match = _find_transaction_by_financial_id(session, imported_id)
-            if duplicate_match is None and date and amount_eur:
-                duplicate_match = _find_cross_source_import_duplicate(
-                    session,
-                    depot_account if tx.get("account_key") == "depot" else cash_account,
-                    date,
-                    amount_eur,
-                    tx.get("memo"),
-                    tx.get("event_type"),
-                )
             if duplicate_match is None and transfer_account is not None and date and amount_eur:
                 duplicate_match = _find_existing_linked_transfer_duplicate(
                     session,
@@ -599,26 +460,7 @@ def preview_import(transactions: List[Dict]) -> Dict[str, Any]:
             })
 
         for tx in depot_transfers:
-            date = datetime.date.fromisoformat(tx["date"]) if tx.get("date") else None
-            amount_eur = (tx.get("amount") or 0) / 100
             duplicate_match = _find_transaction_by_financial_id(session, tx.get("source_id"))
-            if duplicate_match is None and date:
-                duplicate_match = _find_trade_import_duplicate(
-                    session,
-                    cash_account,
-                    date,
-                    amount_eur,
-                    tx.get("memo"),
-                )
-            if duplicate_match is None and date and amount_eur:
-                duplicate_match = _find_cross_source_import_duplicate(
-                    session,
-                    cash_account,
-                    date,
-                    amount_eur,
-                    tx.get("memo"),
-                    tx.get("event_type"),
-                )
             duplicate = duplicate_match is not None
             if duplicate:
                 duplicates += 1
@@ -642,18 +484,7 @@ def preview_import(transactions: List[Dict]) -> Dict[str, Any]:
         for tx in transactions:
             if tx.get("transfer_kind") is not None:
                 continue
-            date = datetime.date.fromisoformat(tx["date"]) if tx.get("date") else None
-            amount_eur = (tx.get("amount") or 0) / 100
             duplicate_match = _find_transaction_by_financial_id(session, tx.get("source_id"))
-            if duplicate_match is None and date and amount_eur:
-                duplicate_match = _find_cross_source_import_duplicate(
-                    session,
-                    depot_account if tx.get("account_key") == "depot" else cash_account,
-                    date,
-                    amount_eur,
-                    tx.get("memo"),
-                    tx.get("event_type"),
-                )
             duplicate = duplicate_match is not None
             if duplicate:
                 duplicates += 1
@@ -951,11 +782,13 @@ def adjust_depot_balance(
             return result
 
         notes = (
-            "Depotwert-Anpassung\n"
-            f" balance before adjustment: {current}\n"
-            f" Target Trade Republic depot value: {cents_to_decimal(target_cents)}\n"
-            f" Adjustment delta: {delta}\n"
-            f" Last depot valuation: {last_valuation_date or 'none'}\n"
+            "Trade Republic Depotwert-Anpassung\n"
+            f"Actual balance before adjustment: {current}\n"
+            f"Target Trade Republic depot value: {cents_to_decimal(target_cents)}\n"
+            f"Adjustment delta: {delta}\n"
+            f"Last depot valuation: {last_valuation_date or 'none'}\n"
+            "Reason: Kursgewinn/-verlust seit letzter Depotbewertung oder sonstige Bewertungsdifferenz.\n"
+            "This is an explicit market-value correction, not a Trade Republic cashflow."
         )
         tx = create_transaction(
             session,
@@ -1184,15 +1017,6 @@ def push_transactions(transactions: List[Dict]) -> Dict:
                     if is_transfer and transfer_kind == "external" and transfer_account is not None and amount_eur:
                         duplicate_match = _find_transaction_by_financial_id(session, imported_id)
                         if duplicate_match is None:
-                            duplicate_match = _find_cross_source_import_duplicate(
-                                session,
-                                account,
-                                date,
-                                amount_eur,
-                                notes,
-                                tx.get("event_type"),
-                            )
-                        if duplicate_match is None:
                             duplicate_match = _find_existing_linked_transfer_duplicate(
                                 session,
                                 transfer_account,
@@ -1253,23 +1077,6 @@ def push_transactions(transactions: List[Dict]) -> Dict:
 
                     if is_transfer and transfer_kind == "depot" and amount_eur:
                         duplicate_match = _find_transaction_by_financial_id(session, imported_id)
-                        if duplicate_match is None:
-                            duplicate_match = _find_trade_import_duplicate(
-                                session,
-                                cash_account,
-                                date,
-                                amount_eur,
-                                notes,
-                            )
-                        if duplicate_match is None:
-                            duplicate_match = _find_cross_source_import_duplicate(
-                                session,
-                                cash_account,
-                                date,
-                                amount_eur,
-                                notes,
-                                tx.get("event_type"),
-                            )
                         if duplicate_match is not None:
                             duplicates += 1
                             log.debug("Skipping duplicate trade transfer (imported_id=%s)", imported_id)
@@ -1314,15 +1121,6 @@ def push_transactions(transactions: List[Dict]) -> Dict:
                         continue
 
                     duplicate_match = _find_transaction_by_financial_id(session, imported_id)
-                    if duplicate_match is None and date and amount_eur:
-                        duplicate_match = _find_cross_source_import_duplicate(
-                            session,
-                            account,
-                            date,
-                            amount_eur,
-                            notes,
-                            tx.get("event_type"),
-                        )
                     if duplicate_match is not None:
                         duplicates += 1
                         log.debug("Skipping cross-source duplicate transaction (imported_id=%s)", imported_id)
