@@ -136,3 +136,57 @@ def test_sync_failure_notification_can_be_disabled(sent, monkeypatch):
     notify_module.notify_sync_failure("scheduled transaction sync", "boom")
 
     assert sent == []
+
+
+# --- the status endpoint must stay silent ------------------------------------
+
+def test_status_polling_does_not_notify(sent, session_store):
+    """The UI calls /tr/status on every page load. A read-only status check is
+    not an event worth alerting about."""
+    trade_republic._mark_session_expired("s1", notify=False)
+
+    assert sent == []
+    assert session_store["s1"]["status"] == "expired"
+
+
+def test_operations_still_notify(sent, session_store):
+    """A sync that actually failed is worth reporting."""
+    trade_republic._mark_session_expired("s1")
+
+    assert len(sent) == 1
+
+
+def test_a_new_login_supersedes_older_connected_sessions(sent, session_store):
+    """Older sessions used to keep status "connected" forever, so every status
+    poll expired the next one down and reported it as a fresh expiry."""
+    session_store["s0"] = {"status": "connected"}
+    session_store["s1"]["status"] = "connected"
+
+    trade_republic._mark_session_connected("s1")
+
+    assert session_store["s1"]["status"] == "connected"
+    assert session_store["s0"]["status"] == "superseded"
+    # Demoting an old session is bookkeeping, not an incident.
+    assert sent == []
+
+
+def test_only_one_session_is_ever_connected(sent, session_store):
+    for index in range(4):
+        session_store[f"old-{index}"] = {"status": "connected"}
+
+    trade_republic._mark_session_connected("s1")
+
+    connected = [sid for sid, data in session_store.items() if data.get("status") == "connected"]
+    assert connected == ["s1"]
+
+
+def test_superseded_sessions_are_not_reused(sent, session_store, monkeypatch):
+    """_find_connected_session must skip them, otherwise an old cookie file
+    would be picked up instead of the current one."""
+    session_store["s0"] = {"status": "connected"}
+    session_store["s1"]["status"] = "connected"
+
+    trade_republic._mark_session_connected("s1")
+    found, _cookies = trade_republic._find_connected_session()
+
+    assert found == "s1"

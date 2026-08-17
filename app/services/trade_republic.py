@@ -324,7 +324,17 @@ def _load_cookies_into_client(api) -> bool:
     return False
 
 
-def _mark_session_expired(session_id: str | None, message: str = "websession expired") -> None:
+def _mark_session_expired(
+    session_id: str | None,
+    message: str = "websession expired",
+    notify: bool = True,
+) -> None:
+    """Mark a session as expired.
+
+    notify=False for read-only paths such as the status endpoint: polling the
+    status is not an event worth alerting about, and the UI calls it on every
+    page load.
+    """
     if not session_id:
         return
     # Only the connected -> expired transition is worth reporting: a failing
@@ -337,7 +347,7 @@ def _mark_session_expired(session_id: str | None, message: str = "websession exp
             session.update({"status": "expired", "message": message})
             became_expired = True
     _save_sessions()
-    if became_expired:
+    if became_expired and notify:
         # Outside the lock: this makes an HTTP call and must not block others.
         from app.services.notify import notify_session_expired
 
@@ -351,6 +361,12 @@ def _mark_session_connected(session_id: str | None, message: str = "websession v
         session = SESSIONS.get(session_id)
         if session:
             session.update({"status": "connected", "message": message})
+        # A login supersedes any earlier one. Leaving older entries on
+        # "connected" made every status poll expire the next one in line and
+        # report it as a new expiry.
+        for other_id, other in SESSIONS.items():
+            if other_id != session_id and other.get("status") == "connected":
+                other.update({"status": "superseded", "message": "replaced by a newer login"})
     _save_sessions()
     if api is not None:
         try:
@@ -1515,10 +1531,10 @@ def get_login_status() -> Dict:
                     _mark_session_connected(sid, api=api)
                 else:
                     validity = "expired"
-                    _mark_session_expired(sid)
+                    _mark_session_expired(sid, notify=False)
             except Exception:
                 validity = "expired"
-                _mark_session_expired(sid)
+                _mark_session_expired(sid, notify=False)
     return {
         "current_session_id": sid,
         "session_validity": validity,
