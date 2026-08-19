@@ -10,11 +10,13 @@ from app.services.actual import adjust_depot_balance, adjust_sub_depot_balances,
 from app.services.backup import create_backup
 from app.services.notify import notify, notify_sync_failure
 from app.services.state import (
+    get_login_catchup,
     load_state,
     mark_depot_sync_failure,
     mark_depot_sync_success,
     mark_sync_failure,
     mark_sync_success,
+    set_login_catchup,
 )
 from app.services.trade_republic import (
     LOGIN_METHOD_APP_CONFIRMATION,
@@ -456,24 +458,71 @@ async def login_scheduler_loop(cron_expr: str | None = None) -> None:
 
     schedules = parse_cron_list(cron_expr)
     log.info(
-        "Scheduled login enabled with TR_LOGIN_CRON=%s (%s window(s), %s retr(y/ies) %s min apart)",
+        "Scheduled login enabled with TR_LOGIN_CRON=%s (%s window(s), %s retr(y/ies) %s min apart%s)",
         cron_expr, len(schedules), settings.tr_login_retry_count, settings.tr_login_retry_minutes,
+        ", retried daily until confirmed" if settings.tr_login_catchup else "",
     )
+
+    # When a window passes without a confirmation, try again at the same time
+    # the next day, and keep doing so until it succeeds. Without this a missed
+    # Wednesday would leave the sync idle until Saturday.
+    catchup_at = get_login_catchup() if settings.tr_login_catchup else None
+    if catchup_at is not None:
+        # A restart may have spanned the retry time. Roll it forward to the
+        # next occurrence of the same time of day rather than dropping it,
+        # which would silently cancel the retry the restart interrupted.
+        now = datetime.now()
+        while catchup_at <= now:
+            catchup_at += timedelta(days=1)
+        log.info("Resuming login catch-up at %s", catchup_at.isoformat(timespec="seconds"))
 
     while True:
         now = datetime.now()
-        next_run = next_run_of_any(schedules, now)
-        if next_run is None:
+        scheduled_run = next_run_of_any(schedules, now)
+        if scheduled_run is None and catchup_at is None:
             return
+
+        candidates = [run for run in (scheduled_run, catchup_at) if run is not None and run > now]
+        if not candidates:
+            return
+        next_run = min(candidates)
+        is_catchup = next_run == catchup_at and next_run != scheduled_run
+
         delay = max(0.0, (next_run - now).total_seconds())
-        log.info("Next login window at %s", next_run.isoformat(timespec="seconds"))
+        log.info(
+            "Next login %s at %s",
+            "catch-up" if is_catchup else "window",
+            next_run.isoformat(timespec="seconds"),
+        )
         await asyncio.sleep(delay)
+
         try:
-            await run_scheduled_login()
+            result = await run_scheduled_login()
+            status = (result or {}).get("status")
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("Scheduled login failed")
+            status = "failed"
+
+        if not settings.tr_login_catchup:
+            continue
+
+        # "skipped" means the session was still valid, so nothing was missed.
+        if status in ("connected", "skipped"):
+            if catchup_at is not None:
+                log.info("Login succeeded, dropping the daily catch-up")
+            catchup_at = None
+            set_login_catchup(None)
+        else:
+            # Same time of day, next day. Based on the window that just fired,
+            # so repeated failures do not drift later and later.
+            catchup_at = next_run + timedelta(days=1)
+            set_login_catchup(catchup_at)
+            log.info(
+                "Login not confirmed, retrying at %s",
+                catchup_at.isoformat(timespec="seconds"),
+            )
 
 
 # --- Scheduled backups --------------------------------------------------------

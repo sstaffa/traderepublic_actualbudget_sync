@@ -74,3 +74,34 @@ def mark_depot_sync_failure(error: str) -> None:
     state["last_depot_sync_attempt_at"] = now
     state["last_depot_sync_error"] = error
     save_state(state)
+
+
+LOGIN_CATCHUP_KEY = "login_catchup_at"
+
+
+def set_login_catchup(when: datetime | None) -> None:
+    """Remember when to retry a login window that went unconfirmed.
+
+    Persisted rather than kept in memory because the container restarts often
+    (image updates, host reboots), and a restart must not quietly cancel the
+    daily retry and leave the sync idle until the next configured window.
+    """
+    state = load_state()
+    if when is None:
+        state.pop(LOGIN_CATCHUP_KEY, None)
+    else:
+        state[LOGIN_CATCHUP_KEY] = when.isoformat()
+    save_state(state)
+
+
+def get_login_catchup() -> datetime | None:
+    raw = load_state().get(LOGIN_CATCHUP_KEY)
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    # Stored as local naive time; drop any tzinfo so it compares with
+    # datetime.now() the scheduler works with.
+    return parsed.replace(tzinfo=None) if parsed.tzinfo is not None else parsed

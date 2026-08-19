@@ -128,6 +128,10 @@ class Settings:
     # confirms in the app, retry this many times, this many minutes apart.
     tr_login_retry_minutes: int = int(os.getenv("TR_LOGIN_RETRY_MINUTES", "5"))
     tr_login_retry_count: int = int(os.getenv("TR_LOGIN_RETRY_COUNT", "1"))
+    # If a window passes unconfirmed, try again at the same time the next day,
+    # and keep doing so until it succeeds. Without this a missed window leaves
+    # the sync idle until the next configured one.
+    tr_login_catchup: bool = _env_bool("TR_LOGIN_CATCHUP", True)
     # Run the transaction sync right after a scheduled login succeeds, so the
     # sync never has to be kept in step with the login schedule by hand.
     tr_sync_after_login: bool = _env_bool("TR_SYNC_AFTER_LOGIN", True)

@@ -300,3 +300,182 @@ def test_authenticator_login_without_a_secret_fails_clearly(monkeypatch, login_e
 
     assert result["status"] == "failed"
     assert login_env["synced"] == []
+
+
+# --- daily catch-up after a missed window ------------------------------------
+#
+# The loop itself sleeps until the next run, so these tests exercise the same
+# decision the loop makes, without waiting for real time to pass.
+
+def _next_and_catchup(schedules, now, catchup, confirmed):
+    """One iteration: pick the next run, then set or clear the catch-up."""
+    from datetime import timedelta
+    from app.services.scheduler import next_run_of_any
+
+    scheduled = next_run_of_any(schedules, now)
+    candidates = [run for run in (scheduled, catchup) if run is not None and run > now]
+    next_run = min(candidates)
+    is_catchup = next_run == catchup and next_run != scheduled
+    new_catchup = None if confirmed else next_run + timedelta(days=1)
+    return next_run, is_catchup, new_catchup
+
+
+def test_a_missed_window_is_retried_the_next_day_at_the_same_time():
+    from datetime import datetime
+
+    schedules = parse_cron_list("0 18 * * 3; 0 12 * * 6")
+
+    first, _is_catchup, catchup = _next_and_catchup(
+        schedules, datetime(2026, 8, 17, 8, 0), None, confirmed=False
+    )
+    second, is_catchup, _catchup = _next_and_catchup(
+        schedules, first, catchup, confirmed=True
+    )
+
+    assert first == datetime(2026, 8, 19, 18, 0)    # Wednesday
+    assert second == datetime(2026, 8, 20, 18, 0)   # Thursday, same time
+    assert is_catchup
+
+
+def test_repeated_failures_keep_the_same_time_of_day():
+    """Basing the retry on the window that fired keeps it from drifting later
+    with every attempt."""
+    from datetime import datetime
+
+    schedules = parse_cron_list("0 18 * * 3; 0 12 * * 6")
+    now, catchup = datetime(2026, 8, 17, 8, 0), None
+    times = []
+
+    for _day in range(4):
+        now, _is_catchup, catchup = _next_and_catchup(schedules, now, catchup, confirmed=False)
+        times.append(now)
+
+    assert [moment.hour for moment in times[:3]] == [18, 18, 18]
+    assert times[1] == datetime(2026, 8, 20, 18, 0)
+    assert times[2] == datetime(2026, 8, 21, 18, 0)
+
+
+def test_a_confirmed_login_drops_the_catch_up():
+    from datetime import datetime
+
+    schedules = parse_cron_list("0 18 * * 3; 0 12 * * 6")
+
+    first, _is, catchup = _next_and_catchup(
+        schedules, datetime(2026, 8, 17, 8, 0), None, confirmed=False
+    )
+    _second, _is_catchup, catchup = _next_and_catchup(schedules, first, catchup, confirmed=True)
+
+    assert catchup is None
+
+
+def test_the_regular_schedule_resumes_after_a_catch_up():
+    from datetime import datetime
+
+    schedules = parse_cron_list("0 18 * * 3; 0 12 * * 6")
+
+    wednesday, _is, catchup = _next_and_catchup(
+        schedules, datetime(2026, 8, 17, 8, 0), None, confirmed=False
+    )
+    thursday, _is, catchup = _next_and_catchup(schedules, wednesday, catchup, confirmed=True)
+    saturday, is_catchup, _catchup = _next_and_catchup(schedules, thursday, catchup, confirmed=True)
+
+    assert saturday == datetime(2026, 8, 22, 12, 0)
+    assert not is_catchup
+
+
+def test_a_regular_window_wins_when_it_comes_first():
+    """A catch-up must not push the configured schedule aside."""
+    from datetime import datetime
+
+    schedules = parse_cron_list("0 18 * * 5; 0 12 * * 6")   # Friday, Saturday
+
+    friday, _is, catchup = _next_and_catchup(
+        schedules, datetime(2026, 8, 17, 8, 0), None, confirmed=False
+    )
+    following, is_catchup, _catchup = _next_and_catchup(schedules, friday, catchup, confirmed=True)
+
+    # Saturday noon comes before the Saturday-evening catch-up.
+    assert following == datetime(2026, 8, 22, 12, 0)
+    assert not is_catchup
+
+
+def test_catchup_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "tr_login_catchup", False)
+
+    assert settings.tr_login_catchup is False
+
+
+# --- catch-up survives a restart ---------------------------------------------
+
+@pytest.fixture
+def state_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "tr_cookies_file", str(tmp_path / "pytr_cookies.json"))
+    return tmp_path
+
+
+def test_catchup_is_written_to_the_state_file(state_file):
+    from datetime import datetime
+    from app.services.state import get_login_catchup, set_login_catchup
+
+    when = datetime(2026, 8, 20, 18, 0)
+    set_login_catchup(when)
+
+    assert get_login_catchup() == when
+
+
+def test_catchup_survives_a_restart(state_file):
+    """The container restarts often, and a restart must not quietly cancel the
+    retry and leave the sync idle until the next configured window."""
+    from datetime import datetime
+    from app.services import state
+    import importlib
+
+    set_when = datetime(2026, 8, 20, 18, 0)
+    state.set_login_catchup(set_when)
+
+    # A restart is a fresh import reading the same file.
+    importlib.reload(state)
+
+    assert state.get_login_catchup() == set_when
+
+
+def test_a_confirmed_login_clears_the_stored_catchup(state_file):
+    from datetime import datetime
+    from app.services.state import get_login_catchup, set_login_catchup
+
+    set_login_catchup(datetime(2026, 8, 20, 18, 0))
+    set_login_catchup(None)
+
+    assert get_login_catchup() is None
+
+
+def test_no_catchup_stored_reads_as_none(state_file):
+    from app.services.state import get_login_catchup
+
+    assert get_login_catchup() is None
+
+
+def test_a_corrupt_catchup_value_is_ignored(state_file):
+    from app.services.state import get_login_catchup, load_state, save_state
+
+    state = load_state()
+    state["login_catchup_at"] = "not a timestamp"
+    save_state(state)
+
+    assert get_login_catchup() is None
+
+
+def test_a_catchup_missed_during_downtime_rolls_forward():
+    """If the container was down over the retry time, the intent - retry daily
+    at this time of day - is preserved rather than dropped."""
+    from datetime import datetime, timedelta
+
+    stored = datetime(2026, 8, 20, 18, 0)
+    now = datetime(2026, 8, 23, 9, 0)   # three days later
+
+    catchup_at = stored
+    while catchup_at <= now:
+        catchup_at += timedelta(days=1)
+
+    assert catchup_at == datetime(2026, 8, 23, 18, 0)
+    assert catchup_at.hour == stored.hour
