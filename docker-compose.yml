@@ -17,6 +17,8 @@ services:
     environment:
       - TZ=Europe/Berlin
       - APP_MODE=${APP_MODE:-production}
+    labels:
+      - "com.centurylinklabs.watchtower.scope=tr"
     networks:
       - backend
 
@@ -33,6 +35,8 @@ services:
       - WATCHTOWER_CLEANUP=true      # Automatically remove old, unused images after updating
     # Restrict Watchtower to only monitor the 'tr-sync' container
     command: tr-sync
+    labels:
+    - "com.centurylinklabs.watchtower.scope=tr"
     networks:
       - backend
 
