@@ -306,3 +306,63 @@ def test_other_errors_are_not_retried(monkeypatch):
         trade_republic.complete_login_with_totp("s1")
 
     assert len(calls) == 1
+
+# --- a stale session id from the browser -------------------------------------
+
+@pytest.fixture
+def two_sessions(monkeypatch, tmp_path):
+    """What a scheduled login leaves behind: a fresh connected session and the
+    superseded one the browser still has in localStorage."""
+    monkeypatch.setattr(settings, "tr_cookies_file", str(tmp_path / "cookies.json"))
+    monkeypatch.setattr(trade_republic, "SESSIONS", {
+        "old-from-browser": {"status": "superseded", "cookies_file": "/data/old.json"},
+        "new-from-schedule": {"status": "connected", "cookies_file": "/data/new.json"},
+    })
+    monkeypatch.setattr(trade_republic, "_load_sessions", lambda: None)
+    monkeypatch.setattr(trade_republic, "_save_sessions", lambda: None)
+    return trade_republic.SESSIONS
+
+
+def test_a_superseded_id_falls_back_to_the_connected_session(two_sessions):
+    """The browser keeps sending the id it stored, but that session stopped
+    working the moment a scheduled login replaced it."""
+    resolved, _cookies = trade_republic._resolve_session(
+        "old-from-browser", "fetch_transactions", "tr.no_active_session_transactions"
+    )
+
+    assert resolved == "new-from-schedule"
+
+
+def test_a_connected_id_is_honoured(two_sessions):
+    resolved, _cookies = trade_republic._resolve_session(
+        "new-from-schedule", "fetch_transactions", "tr.no_active_session_transactions"
+    )
+
+    assert resolved == "new-from-schedule"
+
+
+def test_no_id_uses_the_connected_session(two_sessions):
+    resolved, _cookies = trade_republic._resolve_session(
+        None, "fetch_transactions", "tr.no_active_session_transactions"
+    )
+
+    assert resolved == "new-from-schedule"
+
+
+def test_an_unknown_id_falls_back_too(two_sessions):
+    resolved, _cookies = trade_republic._resolve_session(
+        "never-heard-of-it", "fetch_transactions", "tr.no_active_session_transactions"
+    )
+
+    assert resolved == "new-from-schedule"
+
+
+def test_without_any_connected_session_it_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "tr_cookies_file", str(tmp_path / "cookies.json"))
+    monkeypatch.setattr(trade_republic, "SESSIONS", {"old": {"status": "expired"}})
+    monkeypatch.setattr(trade_republic, "_load_sessions", lambda: None)
+
+    with pytest.raises(NotImplementedError):
+        trade_republic._resolve_session(
+            "old", "fetch_transactions", "tr.no_active_session_transactions"
+        )

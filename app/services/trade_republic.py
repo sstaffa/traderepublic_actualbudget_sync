@@ -452,6 +452,34 @@ _SAMPLE = [
 ]
 
 
+def _resolve_session(session_id: str | None, what: str, error_key: str) -> tuple[str, str | None]:
+    """Pick the session to work with.
+
+    A session id from the caller is only a hint: the browser stores one in
+    localStorage, and a scheduled login creates a new session while demoting
+    the old one. Honouring a stale id would fail against a session that is no
+    longer connected even though a perfectly good one exists.
+    """
+    connected_sid, connected_cookies = _find_connected_session()
+
+    if session_id:
+        status = (SESSIONS.get(session_id) or {}).get("status")
+        if status == "connected":
+            return session_id, None
+        if connected_sid:
+            log.info(
+                "%s: requested session %s is %s, using connected session %s instead",
+                what, session_id, status or "unknown", connected_sid,
+            )
+            return connected_sid, connected_cookies
+
+    if not connected_sid:
+        raise NotImplementedError(tr(error_key))
+    if not session_id:
+        log.info("%s: using connected session %s", what, connected_sid)
+    return connected_sid, connected_cookies
+
+
 def _find_connected_session() -> tuple[str | None, str | None]:
     """Return the newest connected session and its cookie file."""
     with SESSIONS_LOCK:
@@ -895,14 +923,7 @@ def fetch_depot_value(session_id: str | None = None) -> Dict:
 
     _load_sessions()
 
-    resolved_sid = session_id
-    cookies_file = None
-
-    if not resolved_sid:
-        resolved_sid, cookies_file = _find_connected_session()
-        if not resolved_sid:
-            raise NotImplementedError(tr("tr.no_active_session_depot"))
-        log.info("fetch_depot_value: using connected session %s", resolved_sid)
+    resolved_sid, cookies_file = _resolve_session(session_id, "fetch_depot_value", "tr.no_active_session_depot")
 
     session = SESSIONS.get(resolved_sid, {})
     cookies_file = cookies_file or session.get("cookies_file") or _cookies_file_for_session(resolved_sid)
@@ -935,14 +956,7 @@ def fetch_transactions(session_id: str | None = None) -> List[Dict]:
 
     _load_sessions()
 
-    resolved_sid = session_id
-    cookies_file = None
-
-    if not resolved_sid:
-        resolved_sid, cookies_file = _find_connected_session()
-        if not resolved_sid:
-            raise NotImplementedError(tr("tr.no_active_session_transactions"))
-        log.info("fetch_transactions: using connected session %s", resolved_sid)
+    resolved_sid, cookies_file = _resolve_session(session_id, "fetch_transactions", "tr.no_active_session_transactions")
 
     session = SESSIONS.get(resolved_sid, {})
     cookies_file = cookies_file or session.get("cookies_file") or _cookies_file_for_session(resolved_sid)
@@ -1187,14 +1201,7 @@ def fetch_all_transactions(
 
     _load_sessions()
 
-    resolved_sid = session_id
-    cookies_file = None
-
-    if not resolved_sid:
-        resolved_sid, cookies_file = _find_connected_session()
-        if not resolved_sid:
-            raise NotImplementedError(tr("tr.no_active_session_transactions"))
-        log.info("fetch_all_transactions: using connected session %s", resolved_sid)
+    resolved_sid, cookies_file = _resolve_session(session_id, "fetch_all_transactions", "tr.no_active_session_transactions")
 
     session = SESSIONS.get(resolved_sid, {})
     cookies_file = cookies_file or session.get("cookies_file") or _cookies_file_for_session(resolved_sid)

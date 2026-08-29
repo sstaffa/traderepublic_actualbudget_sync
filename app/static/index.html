@@ -948,7 +948,12 @@
           if (!res.ok) return
           const data = await res.json()
           const sessions = data.sessions || {}
-          const preferred = currentSessionId && sessions[currentSessionId] ? currentSessionId : data.current_session_id
+          // Keep the stored id only while that session is still the connected
+          // one. A scheduled login creates a new session and demotes the old
+          // one, which the browser would otherwise keep sending to /tr/fetch
+          // long after it stopped working.
+          const storedIsConnected = currentSessionId && sessions[currentSessionId]?.status === 'connected'
+          const preferred = storedIsConnected ? currentSessionId : data.current_session_id
           renderServerStatus(data)
           if (preferred) {
             setSessionId(preferred)
