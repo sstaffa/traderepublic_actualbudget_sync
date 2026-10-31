@@ -119,14 +119,18 @@ def _build_memo(tx: Dict[str, Any], event_type: str, status: str, raw: Dict[str,
     if settings.include_status_in_notes and status:
         parts.append(f"status: {status}")
 
+    memo = " ".join(parts)
+
     if settings.include_raw_in_notes:
         payload = raw if raw is not None else tx
         try:
             details = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         except Exception:
             details = str(payload)
-        parts.append("Trade Republic raw: " + details)
-    return "\n".join(parts)
+        raw_line = "Trade Republic raw: " + details
+        memo = f"{memo}\n{raw_line}" if memo else raw_line
+
+    return memo
 
 
 LAST_FILTER_META: Dict[str, Any] = {}
